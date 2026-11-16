@@ -109,6 +109,11 @@ export class Soundscape {
     this.burst(locked ? .38 : 1, .2, locked ? 1600 : 600, .1, .8, 0, false, true);
     this.tone(locked ? 130 : 72, locked ? .18 : .7, .045, 'triangle', 40, .06, .2, true);
   }
+  /** Short servo whine of the camcorder zoom motor. */
+  zoomMotor() {
+    this.tone(1850 + Math.random() * 120, .07, .006, 'square', 2050, 0, .08);
+    this.tone(920, .06, .004, 'sawtooth', 980, .01, .08);
+  }
   reveal() {
     this.burst(1.1, .15, 970, 0, .6, 0, true, true); this.tone(62, 1.3, .08, 'sawtooth', 28, 0, 0, true);
     this.tone(1220, .7, .018, 'sine', 180, .04, -.2, true);

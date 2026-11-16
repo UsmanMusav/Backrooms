@@ -5,7 +5,7 @@ import './refinement.css';
 import { loadExplorerAssets } from './avatar';
 import { CoopUI } from './coop-ui';
 import './native';
-import { BackroomsGame } from './game';
+import { BackroomsGame, MIN_ZOOM, MAX_ZOOM } from './game';
 import type { GameState, Snapshot } from './game';
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './settings';
 
@@ -48,16 +48,22 @@ app.innerHTML = `
     </div>
     <div class="hud-record"><div class="hud-record-top"><span class="record-dot"></span>REC <span id="game-time">00:00:00</span></div><small>CAM 01 · SIGNAL UNSTABLE</small><small class="coop-status" id="coop-status"></small></div>
     <button class="pause-button" id="pause-button" aria-label="Пауза">${icon('pause')}</button>
+    <div class="camcorder" id="camcorder" aria-hidden="true">
+      <i class="cam-corner tl"></i><i class="cam-corner tr"></i><i class="cam-corner bl"></i><i class="cam-corner br"></i>
+      <div class="cam-meta"><span class="cam-mode">▶ SP</span><span class="cam-battery" id="cam-battery"><i></i><i></i><i></i><i></i></span></div>
+      <div class="cam-zoom" id="cam-zoom"><span>W</span><div class="cam-zoom-track"><i id="cam-zoom-fill"></i></div><span>T</span><b id="cam-zoom-value">1.0×</b></div>
+      <div class="cam-stamp"><span>НОЯ.16 1998</span><span id="cam-clock">AM 3:14:00</span></div>
+    </div>
     <div class="crosshair" id="crosshair"></div>
     <div id="interaction" hidden><small id="interaction-label"></small><div class="interaction-action"><kbd>E</kbd><span id="interaction-action"></span></div></div>
     <div id="waypoint" hidden><div class="waypoint-diamond"></div><small id="waypoint-distance"></small><span class="waypoint-direction"></span></div>
     <div class="stamina" id="stamina"><div class="stamina-label"><span>ВЫНОСЛИВОСТЬ</span><span>SHIFT</span></div><div class="stamina-track"><div class="stamina-fill" id="stamina-fill"></div></div></div>
-    <div class="hud-bottom"><div class="hud-shortcuts"><span><kbd>W A S D</kbd> ДВИЖЕНИЕ</span><span><kbd>F</kbd> ФОНАРЬ</span><span><kbd>H</kbd> ОРИЕНТИР</span><span><kbd>ESC</kbd> ПАУЗА</span></div><div class="flashlight-status">${icon('flashlight')}<span id="flashlight-text">ФОНАРЬ ВКЛ.</span></div></div>
+    <div class="hud-bottom"><div class="hud-shortcuts"><span><kbd>W A S D</kbd> ДВИЖЕНИЕ</span><span><kbd>F</kbd> ФОНАРЬ</span><span><kbd>H</kbd> ОРИЕНТИР</span><span><kbd>C</kbd>+<kbd>КОЛЕСО</kbd> ЗУМ</span><span><kbd>ESC</kbd> ПАУЗА</span></div><div class="flashlight-status">${icon('flashlight')}<span id="flashlight-text">ФОНАРЬ ВКЛ.</span></div></div>
   </section>
   <div id="touch-controls" hidden>
     <div id="look-zone" aria-label="Проведите пальцем для осмотра"></div>
     <div id="joystick" role="group" aria-label="Джойстик перемещения"><div class="joystick-ring"></div><div id="joystick-thumb"></div></div>
-    <div class="touch-actions"><button class="touch-button" id="touch-sprint" aria-label="Бег">${icon('run')}</button><button class="touch-button" id="touch-light" aria-label="Фонарик">${icon('flashlight')}</button><button class="touch-button interact-button" id="touch-interact" aria-label="Взаимодействовать">${icon('hand')}</button></div>
+    <div class="touch-actions"><button class="touch-button" id="touch-sprint" aria-label="Бег">${icon('run')}</button><button class="touch-button" id="touch-light" aria-label="Фонарик">${icon('flashlight')}</button><button class="touch-button zoom-button" id="touch-zoom" aria-label="Зум камеры" aria-pressed="false">1×</button><button class="touch-button interact-button" id="touch-interact" aria-label="Взаимодействовать">${icon('hand')}</button></div>
     <button class="touch-hint" id="touch-hint" aria-label="Показать ориентир">H</button>
   </div>
   <div id="notification" role="status" aria-live="polite"><div class="notification-inner"><small id="notification-title"></small><p id="notification-text"></p></div></div>
@@ -72,6 +78,7 @@ const touchControls = $('#touch-controls');
 const dialog = document.querySelector<HTMLDialogElement>('#dialog')!;
 let settings = loadSettings();
 if (matchMedia('(prefers-reduced-motion: reduce)').matches) settings.headBob = false;
+document.body.classList.toggle('camcorder-off', !settings.camcorder);
 let game: BackroomsGame;
 let coopUI: CoopUI;
 let toastTimeout = 0;
@@ -121,6 +128,7 @@ function beginGame() {
 function onState(state: GameState) {
   document.body.dataset.state = state;
   hud.hidden = state !== 'playing';
+  hud.dispatchEvent(new Event('zoomreset'));
   touchControls.hidden = state !== 'playing' || !game?.isTouch;
   $('#notification').classList.remove('visible');
   if (dialog.open) closeModal();
@@ -158,6 +166,15 @@ function renderState(state: GameState) {
 
 function onUpdate(snapshot: Snapshot) {
   $('#game-time').textContent = formatTime(snapshot.elapsed);
+  const clock = 3 * 3600 + 14 * 60 + Math.floor(snapshot.elapsed);
+  $('#cam-clock').textContent = `AM ${Math.floor(clock / 3600) % 12 || 12}:${String(Math.floor(clock / 60) % 60).padStart(2, '0')}:${String(clock % 60).padStart(2, '0')}`;
+  // Tape battery drains one bar every four minutes, purely as a diegetic clock.
+  const bars = Math.max(1, 4 - Math.floor(snapshot.elapsed / 240));
+  document.querySelectorAll('#cam-battery i').forEach((bar, index) => bar.classList.toggle('empty', index >= bars));
+  const zoomRatio = (snapshot.zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM);
+  $('#cam-zoom').classList.toggle('active', snapshot.zooming || snapshot.zoom > 1.03);
+  $('#cam-zoom-fill').style.transform = `scaleX(${Math.max(0, Math.min(1, zoomRatio))})`;
+  $('#cam-zoom-value').textContent = `${snapshot.zoom.toFixed(1)}×`;
   $('#objective-title').textContent = snapshot.powered ? 'Откройте дверь у входа' : snapshot.fuses === 3 ? 'Восстановите питание у входа' : 'Найдите предохранители';
   $('.progress-count').textContent = `${snapshot.fuses} / 3`;
   document.querySelectorAll('.fuse-progress').forEach((element, index) => element.classList.toggle('filled', index < snapshot.fuses));
@@ -206,6 +223,7 @@ dialog.addEventListener('click', event => {
 });
 
 function updateSettings() {
+  document.body.classList.toggle('camcorder-off', !settings.camcorder);
   saveSettings(settings);
   game.applySettings(settings);
   updateSoundButton();
@@ -232,6 +250,7 @@ function showSettings() {
     <div class="settings-row"><label class="setting-label" for="sensitivity-input"><span>Чувствительность мыши</span><output class="setting-value" id="sensitivity-output">${Math.round(settings.sensitivity * 100)}%</output></label><input class="range-input" id="sensitivity-input" type="range" min="10" max="100" value="${settings.sensitivity * 100}"/></div>
     <div class="settings-row"><div class="setting-label">Качество изображения</div><div class="quality-options" role="group" aria-label="Качество изображения">${[['low', 'НИЗКОЕ'], ['medium', 'СРЕДНЕЕ'], ['high', 'ВЫСОКОЕ']].map(([value, label]) => `<button class="quality-option ${settings.quality === value ? 'active' : ''}" data-quality="${value}" aria-pressed="${settings.quality === value}">${label}</button>`).join('')}</div></div>
     <div class="settings-row toggle-row"><div><span class="toggle-title">Плёночное зерно</span><p>Аналоговый шум в духе хорроров эпохи PS3.</p></div><label class="toggle"><input type="checkbox" id="grain-input" aria-label="Плёночное зерно" ${settings.grain ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
+    <div class="settings-row toggle-row"><div><span class="toggle-title">Эффект видеокамеры</span><p>Плёнка VHS, видоискатель, дата записи и дрожание трекинга.</p></div><label class="toggle"><input type="checkbox" id="camcorder-input" aria-label="Эффект видеокамеры" ${settings.camcorder ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
     <div class="settings-row toggle-row"><div><span class="toggle-title">Покачивание камеры</span><p>Плавный шаг, наклон и инерция рук. Отключите при дискомфорте.</p></div><label class="toggle"><input type="checkbox" id="bob-input" aria-label="Покачивание камеры" ${settings.headBob ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
     <div class="dialog-footer"><button class="reset-settings" id="reset-settings">Сбросить настройки</button><button class="primary-button" id="settings-done"><span>ГОТОВО</span>${icon('check')}</button></div>
   `);
@@ -259,6 +278,7 @@ function showSettings() {
   }));
   $('#grain-input').addEventListener('change', event => { settings.grain = (event.target as HTMLInputElement).checked; updateSettings(); });
   $('#bob-input').addEventListener('change', event => { settings.headBob = (event.target as HTMLInputElement).checked; updateSettings(); });
+  $('#camcorder-input').addEventListener('change', event => { settings.camcorder = (event.target as HTMLInputElement).checked; updateSettings(); });
   $('#settings-done').addEventListener('click', () => { game.audio.click(); closeModal(); });
   $('#reset-settings').addEventListener('click', () => { settings = { ...DEFAULT_SETTINGS }; updateSettings(); showSettings(); });
 }
@@ -332,6 +352,16 @@ function bindTouchControls() {
   $('#touch-interact').addEventListener('click', () => game.interact());
   $('#touch-light').addEventListener('click', () => game.toggleFlashlight());
   $('#touch-hint').addEventListener('click', () => game.showHint());
+  // Tap cycles the optical zoom: off → 2.5× → 5× → off.
+  const zoomButton = $('#touch-zoom'), zoomSteps = [0, 2.5, 5]; let zoomStep = 0;
+  zoomButton.addEventListener('click', () => {
+    zoomStep = (zoomStep + 1) % zoomSteps.length;
+    if (zoomSteps[zoomStep]) game.setZoomPreset(zoomSteps[zoomStep]);
+    game.setTouchZoom(zoomStep > 0);
+    zoomButton.textContent = zoomStep ? `${zoomSteps[zoomStep]}×` : '1×';
+    zoomButton.setAttribute('aria-pressed', String(zoomStep > 0)); zoomButton.classList.toggle('active', zoomStep > 0);
+  });
+  hud.addEventListener('zoomreset', () => { zoomStep = 0; zoomButton.textContent = '1×'; zoomButton.setAttribute('aria-pressed', 'false'); zoomButton.classList.remove('active'); });
   const sprint = $('#touch-sprint');
   sprint.addEventListener('pointerdown', event => { sprint.setPointerCapture(event.pointerId); game.setVirtualSprint(true); sprint.classList.add('active'); });
   const releaseSprint = () => { game.setVirtualSprint(false); sprint.classList.remove('active'); };

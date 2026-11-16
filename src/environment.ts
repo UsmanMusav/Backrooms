@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CELL, WALL_HEIGHT, seededRandom } from './level';
 import { labelTexture } from './textures';
+import { createWallOutlet } from './props';
+import { debrisPaperAtlas } from './materials';
 
 /** Small batched details and baked contact shading, affordable on the PS3-like low preset. */
 export function enrichEnvironment(scene: THREE.Scene, map: boolean[][]) {
@@ -24,13 +26,11 @@ export function enrichEnvironment(scene: THREE.Scene, map: boolean[][]) {
   }
   const contactMesh = new THREE.Mesh(mergeGeometries(contactGeometries), new THREE.MeshBasicMaterial({ map: contact, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 }));
   contactMesh.name = 'WallContactShadows'; scene.add(contactMesh); contactGeometries.forEach(g => g.dispose());
-  const random = seededRandom(318), socketMaterial = new THREE.MeshStandardMaterial({ color: 0x898d6b, roughness: .82 });
-  const darkMaterial = new THREE.MeshStandardMaterial({ color: 0x292e24, roughness: .9 });
+  const random = seededRandom(318), darkMaterial = new THREE.MeshStandardMaterial({ color: 0x292e24, roughness: .9 });
+  const outlet = createWallOutlet();
   for (let i = 0; i < roomWalls.length; i += 12) {
-    const { x, z, dx, dz } = roomWalls[i], detail = new THREE.Group();
-    detail.position.set(x * CELL + dx * (CELL / 2 + .014), .32, z * CELL + dz * (CELL / 2 + .014)); detail.rotation.y = Math.atan2(dx, dz);
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(.12, .15, .017), socketMaterial); detail.add(frame);
-    for (const side of [-1, 1]) { const hole = new THREE.Mesh(new THREE.CircleGeometry(.008, 8), darkMaterial); hole.position.set(side * .024, 0, .009); detail.add(hole); }
+    const { x, z, dx, dz } = roomWalls[i], detail = outlet.clone();
+    detail.position.set(x * CELL + dx * (CELL / 2 + .002), .32, z * CELL + dz * (CELL / 2 + .002)); detail.rotation.y = Math.atan2(dx, dz);
     scene.add(detail);
     if (i % 24 === 0) {
       const plate = new THREE.Mesh(new THREE.PlaneGeometry(.34, .11), new THREE.MeshStandardMaterial({ map: labelTexture(`0 / ${String(100 + i).padStart(3, '0')}`, '#bfc1a1', '#47523c'), roughness: 1 }));
@@ -39,14 +39,17 @@ export function enrichEnvironment(scene: THREE.Scene, map: boolean[][]) {
       const wire = new THREE.Mesh(new THREE.TubeGeometry(cable, 12, .012, 5, false), darkMaterial); wire.position.copy(detail.position).setY(WALL_HEIGHT - .25); wire.rotation.copy(detail.rotation); scene.add(wire);
     }
   }
+  // Debris sheets: four printed/handwritten designs from one atlas, each slightly crumpled.
   for (let i = 0; i < 55; i++) {
     const x = 2 + Math.floor(random() * 23), z = 2 + Math.floor(random() * 23);
     if (map[z][x]) continue;
-    const g = new THREE.PlaneGeometry(.16 + random() * .10, .25 + random() * .12);
-    g.rotateX(-Math.PI / 2); g.rotateY(random() * 6.28); g.translate(x * CELL + random() - .5, .012, z * CELL + random() - .5); paperGeometries.push(g);
+    const g = new THREE.PlaneGeometry(.21 + random() * .02, .297, 4, 5), sheet = Math.floor(random() * 4);
+    const uv = g.attributes.uv as THREE.BufferAttribute, position = g.attributes.position as THREE.BufferAttribute, crumple = random() < .3 ? .03 : .008;
+    for (let v = 0; v < uv.count; v++) { uv.setX(v, (sheet + uv.getX(v)) / 4); position.setZ(v, Math.abs(Math.sin(v * 12.9898 + i) * crumple)); }
+    g.computeVertexNormals(); g.rotateX(-Math.PI / 2); g.rotateY(random() * 6.28); g.translate(x * CELL + random() - .5, .006, z * CELL + random() - .5); paperGeometries.push(g);
   }
   if (paperGeometries.length) {
-    const papers = new THREE.Mesh(mergeGeometries(paperGeometries), new THREE.MeshStandardMaterial({ map: labelTexture('NO SIGNAL / 1998', '#6c7159', '#c0bda1'), roughness: 1 }));
+    const papers = new THREE.Mesh(mergeGeometries(paperGeometries), debrisPaperAtlas());
     papers.receiveShadow = true; scene.add(papers); paperGeometries.forEach(g => g.dispose());
   }
 }

@@ -5,17 +5,17 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { CELL, WALL_HEIGHT, MAP_SIZE, SPAWN, FUSE_CELLS, PANEL_CELL, EXIT_CELL, canStand, clearSight, createMap, seededRandom } from './level';
+import { CELL, WALL_HEIGHT, MAP_SIZE, SPAWN, FUSE_CELLS, PANEL_CELL, EXIT_CELL, canStand, clearSight, createMap, seededRandom, surfaceVariant } from './level';
 import type { Cell } from './level';
 import { MimicBrain } from '../shared/mimic';
 import type { Actor, ClientMessage, Pose, RoomView } from '../shared/protocol';
 import { ExplorerAvatar, createViewArm } from './avatar';
-import { createTorch, createFuse, createSwitchboard, createArchive, wornMetalTexture } from './props';
-import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { createTorch, createFuse, createSwitchboard, createArchive, createOfficeChair, createCardboardBox, createExitDoor, createReturnGrille } from './props';
+import { prismaticLens, paintedSteel } from './materials';
 import { FirstPersonMotion } from './motion';
 import { TensionDirector, FIELD_NOTES } from './tension';
 import { enrichEnvironment } from './environment';
-import { wallpaperTexture, carpetTexture, ceilingTexture, labelTexture, stainTexture, surfaceMaps, cardboardTexture } from './textures';
+import { wallpaperTexture, carpetTexture, ceilingTexture, stainTexture, surfaceMaps, addMacroVariation, WALL_VARIANT_WEIGHTS, CARPET_VARIANT_WEIGHTS, CEILING_VARIANT_WEIGHTS } from './textures';
 import { Soundscape } from './audio';
 import type { Settings } from './settings';
 
@@ -30,7 +30,11 @@ export type Snapshot = {
   danger: number;
   interaction: { type: string; label: string; action: string } | null;
   hint: { x: number; y: number; distance: number; behind: boolean } | null;
+  /** Optical camcorder zoom (1 = wide). */
+  zoom: number;
+  zooming: boolean;
 };
+export const MIN_ZOOM = 1, MAX_ZOOM = 6;
 type Interactable = { type: 'fuse' | 'panel' | 'exit' | 'note'; position: THREE.Vector3; object: THREE.Group; index: number; taken: boolean };
 type LightFixture = { position: THREE.Vector3; strength: number; flicker: boolean };
 type Callbacks = {
@@ -39,12 +43,18 @@ type Callbacks = {
   onMessage: (text: string, title?: string) => void;
 };
 
+/**
+ * Analogue camcorder look: lens barrel, chroma bleed, interlaced scanlines, rolling tracking
+ * noise, head-switching distortion at the bottom edge and focus hunting while zooming.
+ */
 const FilmShader = {
   uniforms: {
     tDiffuse: { value: null },
     time: { value: 0 },
     grain: { value: 0.016 },
     danger: { value: 0 },
+    camcorder: { value: 1 },
+    focus: { value: 0 },
     resolution: { value: new THREE.Vector2(1920, 1080) },
   },
   vertexShader: `varying vec2 vUv;
@@ -54,26 +64,59 @@ const FilmShader = {
     uniform float time;
     uniform float grain;
     uniform float danger;
+    uniform float camcorder;
+    uniform float focus;
     uniform vec2 resolution;
     varying vec2 vUv;
     float random(vec2 p) { return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
+    vec3 sampleLens(vec2 uv, float shift) {
+      vec3 c;
+      c.r = texture2D(tDiffuse, uv + vec2(shift, 0.0)).r;
+      c.g = texture2D(tDiffuse, uv).g;
+      c.b = texture2D(tDiffuse, uv - vec2(shift, 0.0)).b;
+      return c;
+    }
     void main() {
       vec2 uv = vUv;
       vec2 p = (uv - 0.5) * 2.0;
-      uv = 0.5 + (uv - 0.5) * (1.0 + 0.008 * dot(p,p));
-      float noise = random(floor(uv * resolution) + fract(time) * 987.0) - 0.5;
-      float shift = (0.00055 + danger * 0.003) * dot(p,p);
-      vec3 color;
-      color.r = texture2D(tDiffuse, uv + vec2(shift,0.0)).r;
-      color.g = texture2D(tDiffuse, uv).g;
-      color.b = texture2D(tDiffuse, uv - vec2(shift,0.0)).b;
+      uv = 0.5 + (uv - 0.5) * (1.0 + (0.008 + camcorder * 0.014) * dot(p,p));
+      float line = floor(uv.y * resolution.y * 0.5);
+      // Tape wobble, a slow rolling tracking band and head-switch tearing near the bottom.
+      float band = fract(time * 0.045 + sin(time * 0.31) * 0.08);
+      float roll = smoothstep(0.9, 1.0, sin(time * 0.21) * 0.5 + 0.5);
+      float inBand = smoothstep(0.03, 0.0, abs(uv.y - band)) * (0.08 + roll * 0.55 + danger * 1.4);
+      float headSwitch = smoothstep(0.022, 0.0, uv.y);
+      float jitter = (random(vec2(line, floor(time * 30.0))) - 0.5) * 0.0011;
+      uv.x += camcorder * (jitter + inBand * (random(vec2(line, time)) - 0.5) * 0.02 + headSwitch * 0.008 * sin(time * 40.0 + uv.y * 300.0) + sin(uv.y * 9.0 + time * 1.3) * 0.0006);
+      float shift = (0.00055 + danger * 0.003) * dot(p,p) + camcorder * 0.0011;
+      vec3 color = sampleLens(uv, shift);
+      if (focus > 0.001) {
+        // Autofocus hunting while the zoom motor runs.
+        vec2 r = focus * 0.006 * vec2(resolution.y / resolution.x, 1.0);
+        vec3 blur = color;
+        blur += sampleLens(uv + vec2(r.x, 0.0), shift); blur += sampleLens(uv - vec2(r.x, 0.0), shift);
+        blur += sampleLens(uv + vec2(0.0, r.y), shift); blur += sampleLens(uv - vec2(0.0, r.y), shift);
+        blur += sampleLens(uv + r * 0.7, shift); blur += sampleLens(uv - r * 0.7, shift);
+        blur += sampleLens(uv + vec2(r.x, -r.y) * 0.7, shift); blur += sampleLens(uv + vec2(-r.x, r.y) * 0.7, shift);
+        color = blur / 9.0;
+      }
+      if (camcorder > 0.0) {
+        // Chroma has less bandwidth than luma on tape: smear colour horizontally.
+        vec3 smear = texture2D(tDiffuse, uv - vec2(0.004, 0.0)).rgb;
+        float luma = dot(color, vec3(0.299, 0.587, 0.114));
+        vec3 chroma = mix(color - luma, smear - dot(smear, vec3(0.299, 0.587, 0.114)), 0.45 * camcorder);
+        color = luma + chroma * 0.82;
+        color = color * 0.94 + 0.025;
+      }
       float luminance = dot(color, vec3(0.2126,0.7152,0.0722));
       color = mix(color, vec3(luminance), 0.12);
       color *= vec3(1.025, 1.012, 0.955);
-      float vignette = 1.0 - smoothstep(0.25, 1.45, length(p * vec2(0.83, 0.92))) * 0.63;
+      float vignette = 1.0 - smoothstep(0.25, 1.45, length(p * vec2(0.83, 0.92))) * (0.63 + camcorder * 0.12);
       color *= vignette;
-      color += noise * (grain * (0.32 + min(luminance, 1.0) * 0.68) + danger * 0.06);
+      float noise = random(floor(uv * resolution) + fract(time) * 987.0) - 0.5;
+      color += noise * (grain * (0.32 + min(luminance, 1.0) * 0.68) + danger * 0.06 + inBand * camcorder * 0.09 + headSwitch * camcorder * 0.05);
       color *= 0.994 + sin(uv.y * resolution.y * 1.7) * 0.006;
+      color *= 1.0 - camcorder * 0.07 * step(0.5, fract(gl_FragCoord.y * 0.5));
       color = mix(color, vec3(noise + 0.32), danger * 0.035);
       gl_FragColor = vec4(color,1.0);
     }`,
@@ -109,7 +152,12 @@ export class BackroomsGame {
   private pickupDip = 0;
   private tension = new TensionDirector();
   private lightLevel = 1;
-  private tubeMaterial?: THREE.MeshStandardMaterial;
+  private tubeMaterials: THREE.MeshStandardMaterial[] = [];
+  private zoom = 1;
+  private zoomPreset = 2.5;
+  private zoomFocus = 0;
+  private touchZoom = false;
+  private lastZoomSound = 0;
   private ambientLights: THREE.Light[] = [];
   private panelLamps: THREE.Mesh[] = [];
   private panelLever?: THREE.Group;
@@ -187,7 +235,7 @@ export class BackroomsGame {
     this.buildObjectives();
     this.buildEntity();
 
-    this.flashlight = new THREE.SpotLight(0xfff2d5, 37, 25, 0.40, 0.62, 1.4);
+    this.flashlight = new THREE.SpotLight(0xfff2d5, 20, 25, 0.40, 0.62, 1.0);
     // Put the emitter just beyond the lens, not behind the view-model: otherwise
     // the hand is lit by its own high-intensity spotlight at centimetre range.
     this.flashlight.position.set(-0.24, -0.2, -0.65);
@@ -230,47 +278,71 @@ export class BackroomsGame {
   }
 
   private buildArchitecture() {
-    const wallTex = wallpaperTexture();
-    const wallMaterial = new THREE.MeshStandardMaterial({ map: wallTex, ...surfaceMaps(wallTex, 2.2, .91), normalScale: new THREE.Vector2(.65, .65), roughness: 1, color: 0xf3e9c3 });
-    const floorTex = carpetTexture();
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL), new THREE.MeshStandardMaterial({ map: floorTex, ...surfaceMaps(floorTex, 3, .98), normalScale: new THREE.Vector2(.8, .8), roughness: 1, color: 0xc3bc9b }));
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.set((MAP_SIZE - 1) * CELL / 2, 0, (MAP_SIZE - 1) * CELL / 2);
-    floor.receiveShadow = true;
-    this.scene.add(floor);
-    const ceilingTex = ceilingTexture();
-    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL), new THREE.MeshStandardMaterial({ map: ceilingTex, ...surfaceMaps(ceilingTex, 1.6, .96), roughness: 1, color: 0xd4d5bf }));
-    ceiling.rotation.x = Math.PI / 2;
-    ceiling.position.copy(floor.position).setY(WALL_HEIGHT);
-    ceiling.receiveShadow = true;
-    this.scene.add(ceiling);
+    // Every wall face and floor/ceiling tile picks a deterministic texture variant, a
+    // rotation/mirror, and a world-space macro tint, so surfaces no longer repeat exactly.
+    const makeSet = (count: number, make: (variant: number) => THREE.CanvasTexture, depth: number, rough: number, color: number, normal: number, macro: [number, number, number]) =>
+      Array.from({ length: count }, (_, variant) => {
+        const map = make(variant);
+        const material = new THREE.MeshStandardMaterial({ map, ...surfaceMaps(map, depth, rough), normalScale: new THREE.Vector2(normal, normal), roughness: 1, color });
+        return addMacroVariation(material, ...macro);
+      });
+    const wallMaterials = makeSet(WALL_VARIANT_WEIGHTS.length, wallpaperTexture, 2.2, .91, 0xf3e9c3, .65, [.12, .09, 3.1]);
+    const floorMaterials = makeSet(CARPET_VARIANT_WEIGHTS.length, carpetTexture, 3, .98, 0xc3bc9b, .8, [.17, .13, 7.7]);
+    const ceilingMaterials = makeSet(CEILING_VARIANT_WEIGHTS.length, ceilingTexture, 1.6, .96, 0xd4d5bf, 1, [.1, .1, 1.3]);
+    const transformUv = (geometry: THREE.BufferGeometry, turn: number, mirror: boolean) => {
+      const uv = geometry.attributes.uv as THREE.BufferAttribute;
+      for (let i = 0; i < uv.count; i++) {
+        let u = uv.getX(i) - .5, v = uv.getY(i) - .5;
+        for (let k = 0; k < turn; k++) [u, v] = [-v, u];
+        uv.setXY(i, (mirror ? -u : u) + .5, v + .5);
+      }
+    };
+    const floorTiles: THREE.BufferGeometry[][] = floorMaterials.map(() => []), ceilingTiles: THREE.BufferGeometry[][] = ceilingMaterials.map(() => []);
+    for (let z = 0; z < MAP_SIZE; z++) for (let x = 0; x < MAP_SIZE; x++) {
+      if (this.map[z][x]) continue;
+      const floorPick = surfaceVariant(x, z, 0, CARPET_VARIANT_WEIGHTS, 11), ceilingPick = surfaceVariant(x, z, 1, CEILING_VARIANT_WEIGHTS, 23);
+      const floorTile = new THREE.PlaneGeometry(CELL, CELL); transformUv(floorTile, floorPick.turn, floorPick.mirror);
+      floorTile.rotateX(-Math.PI / 2).translate(x * CELL, 0, z * CELL); floorTiles[floorPick.variant].push(floorTile);
+      const ceilingTile = new THREE.PlaneGeometry(CELL, CELL); transformUv(ceilingTile, ceilingPick.turn, false);
+      ceilingTile.rotateX(Math.PI / 2).translate(x * CELL, WALL_HEIGHT, z * CELL); ceilingTiles[ceilingPick.variant].push(ceilingTile);
+    }
+    const addSurfaces = (buckets: THREE.BufferGeometry[][], materials: THREE.Material[], name: string) => buckets.forEach((geometries, variant) => {
+      if (!geometries.length) return;
+      const mesh = new THREE.Mesh(mergeGeometries(geometries), materials[variant]); mesh.name = `${name}-${variant}`; mesh.receiveShadow = true;
+      this.scene.add(mesh); geometries.forEach(g => g.dispose());
+    });
+    addSurfaces(floorTiles, floorMaterials, 'Floor');
+    addSurfaces(ceilingTiles, ceilingMaterials, 'Ceiling');
 
-    const walls: THREE.BufferGeometry[] = [];
+    const wallFaces: THREE.BufferGeometry[][] = wallMaterials.map(() => []), shadowFaces: THREE.BufferGeometry[] = [];
     const trims: THREE.BufferGeometry[] = [];
     const crowns: THREE.BufferGeometry[] = [];
+    const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     for (let z = 1; z < MAP_SIZE - 1; z++) {
       for (let x = 1; x < MAP_SIZE - 1; x++) {
         if (!this.map[z][x]) continue;
-        const exposed = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dz]) => this.map[z + dz]?.[x + dx] === false);
-        if (!exposed.length) continue;
-        walls.push(new THREE.BoxGeometry(CELL, WALL_HEIGHT, CELL).translate(x * CELL, WALL_HEIGHT / 2, z * CELL));
-        for (const [dx, dz] of exposed) {
+        directions.forEach(([dx, dz], face) => {
+          if (this.map[z + dz]?.[x + dx] !== false) return;
+          const pick = surfaceVariant(x, z, face, WALL_VARIANT_WEIGHTS, 5), angle = Math.atan2(dx, dz);
+          const panel = new THREE.PlaneGeometry(CELL, WALL_HEIGHT); transformUv(panel, 0, pick.mirror);
+          panel.rotateY(angle).translate(x * CELL + dx * CELL / 2, WALL_HEIGHT / 2, z * CELL + dz * CELL / 2); wallFaces[pick.variant].push(panel);
+          // Inward-facing twin used only by the flashlight shadow map (like the back of a solid block).
+          shadowFaces.push(new THREE.PlaneGeometry(CELL + .04, WALL_HEIGHT).rotateY(angle + Math.PI).translate(x * CELL + dx * (CELL / 2 - .02), WALL_HEIGHT / 2, z * CELL + dz * (CELL / 2 - .02)));
           const tx = x * CELL + dx * (CELL / 2 + 0.016);
           const tz = z * CELL + dz * (CELL / 2 + 0.016);
           trims.push(new THREE.BoxGeometry(dx ? 0.035 : CELL, 0.13, dz ? 0.035 : CELL).translate(tx, 0.065, tz));
           crowns.push(new THREE.BoxGeometry(dx ? 0.035 : CELL, 0.042, dz ? 0.035 : CELL).translate(tx, WALL_HEIGHT - 0.021, tz));
-        }
+        });
       }
     }
-    const wallMesh = new THREE.Mesh(mergeGeometries(walls), wallMaterial);
-    wallMesh.castShadow = true;
-    wallMesh.receiveShadow = true;
-    this.scene.add(wallMesh);
+    addSurfaces(wallFaces, wallMaterials, 'Wallpaper');
+    const shadowMesh = new THREE.Mesh(mergeGeometries(shadowFaces), wallMaterials[0]);
+    shadowMesh.name = 'WallShadowCaster'; shadowMesh.castShadow = true; this.scene.add(shadowMesh); shadowFaces.forEach(g => g.dispose());
     const baseboard = new THREE.Mesh(mergeGeometries(trims), new THREE.MeshStandardMaterial({ color: 0x504931, roughness: 0.88 }));
     baseboard.receiveShadow = true;
     this.scene.add(baseboard);
     this.scene.add(new THREE.Mesh(mergeGeometries(crowns), new THREE.MeshStandardMaterial({ color: 0x858269, roughness: 1 })));
-    [...walls, ...trims, ...crowns].forEach(geometry => geometry.dispose());
+    [...trims, ...crowns].forEach(geometry => geometry.dispose());
 
     this.ambientLights = [new THREE.HemisphereLight(0xb8c6ac, 0x3b341c, .48), new THREE.AmbientLight(0xb3b08b, .13)];
     this.scene.add(...this.ambientLights);
@@ -286,28 +358,31 @@ export class BackroomsGame {
         if (!this.map[z][x] && !fixtureCells.some(c => Math.hypot(c.x - x, c.z - z) < 2)) fixtureCells.push({ x, z });
       }
     }
-    const frames: THREE.BufferGeometry[] = [];
-    const backs: THREE.BufferGeometry[] = [];
-    const bulbs: THREE.BufferGeometry[] = [];
+    // Surface-mounted 2-tube troffers: steel housing, end caps, prismatic acrylic lens.
+    const housings: THREE.BufferGeometry[] = [], lenses: THREE.BufferGeometry[][] = [[], []];
     const random = seededRandom(73);
     fixtureCells.forEach((cell, index) => {
       const x = cell.x * CELL;
       const z = cell.z * CELL;
       const horizontal = index % 3 === 0;
-      const w = horizontal ? 1.22 : 0.5;
-      const d = horizontal ? 0.5 : 1.22;
-      frames.push(new THREE.BoxGeometry(w + 0.085, 0.075, d + 0.085).translate(x, WALL_HEIGHT - 0.055, z));
-      backs.push(new THREE.BoxGeometry(w, 0.012, d).translate(x, WALL_HEIGHT - 0.097, z));
-      for (const offset of [-0.13, 0.13]) {
-        bulbs.push(new THREE.BoxGeometry(horizontal ? 1.09 : 0.065, 0.023, horizontal ? 0.065 : 1.09).translate(x + (horizontal ? 0 : offset), WALL_HEIGHT - 0.11, z + (horizontal ? offset : 0)));
-      }
+      const w = horizontal ? 1.22 : 0.6;
+      const d = horizontal ? 0.6 : 1.22;
+      const y = WALL_HEIGHT - .022;
+      housings.push(new THREE.BoxGeometry(w + .05, .044, .028).translate(x, y, z - d / 2 - .011), new THREE.BoxGeometry(w + .05, .044, .028).translate(x, y, z + d / 2 + .011),
+        new THREE.BoxGeometry(.028, .044, d).translate(x - w / 2 - .011, y, z), new THREE.BoxGeometry(.028, .044, d).translate(x + w / 2 + .011, y, z),
+        new THREE.BoxGeometry(horizontal ? .04 : w, .012, horizontal ? d : .04).translate(x + (horizontal ? w / 2 - .02 : 0), WALL_HEIGHT - .036, z + (horizontal ? 0 : d / 2 - .02)));
+      lenses[horizontal ? 0 : 1].push(new THREE.PlaneGeometry(w, d).rotateX(Math.PI / 2).translate(x, WALL_HEIGHT - .03, z));
       this.fixtures.push({ position: new THREE.Vector3(x, WALL_HEIGHT - 0.23, z), strength: 14 + random() * 6, flicker: index % 9 === 4 });
     });
-    this.scene.add(new THREE.Mesh(mergeGeometries(frames), new THREE.MeshStandardMaterial({ color: 0x777660, roughness: 0.58, metalness: 0.3 })));
-    this.scene.add(new THREE.Mesh(mergeGeometries(backs), new THREE.MeshStandardMaterial({ color: 0xdbd9be, emissive: 0xc6cfaa, emissiveIntensity: 0.38, roughness: 0.5 })));
-    this.tubeMaterial = new THREE.MeshStandardMaterial({ color: 0xf4f8de, emissive: 0xf1ffce, emissiveIntensity: 3.6 });
-    this.scene.add(new THREE.Mesh(mergeGeometries(bulbs), this.tubeMaterial));
-    [...frames, ...backs, ...bulbs].forEach(geometry => geometry.dispose());
+    const housing = new THREE.Mesh(mergeGeometries(housings), paintedSteel('#cfccb6', 70, .15)); housing.name = 'TrofferHousings'; this.scene.add(housing);
+    housings.forEach(g => g.dispose());
+    lenses.forEach((geometries, i) => {
+      if (!geometries.length) return;
+      const lens = prismaticLens(i === 0);
+      const material = new THREE.MeshStandardMaterial({ color: 0xf4f8de, map: lens, emissive: 0xf1ffce, emissiveMap: lens, emissiveIntensity: 2.3, roughness: .4 });
+      material.userData.baseEmissive = 2.3; this.tubeMaterials.push(material);
+      const mesh = new THREE.Mesh(mergeGeometries(geometries), material); mesh.name = 'TrofferLenses'; this.scene.add(mesh); geometries.forEach(g => g.dispose());
+    });
     for (let i = 0; i < 10; i++) {
       const light = new THREE.PointLight(i % 3 ? 0xfff0c9 : 0xdeedc3, 16, 10.8, 1.7);
       this.lights.push(light);
@@ -335,45 +410,19 @@ export class BackroomsGame {
       patch.position.set(x * CELL, .013, z * CELL); this.scene.add(patch);
       this.wetZones.push(new THREE.Vector2(x * CELL, z * CELL));
     }
-    const ventMaterial = new THREE.MeshStandardMaterial({ color: 0x777361, roughness: 0.7, metalness: 0.35 });
+    const grille = createReturnGrille(1);
     for (const [x, z] of [[3, 5], [8, 8], [12, 3], [5, 18], [21, 10], [15, 20]]) {
-      const vent = new THREE.Group();
-      const frame = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.035, 0.56), ventMaterial);
-      vent.add(frame);
-      for (let i = 0; i < 9; i++) {
-        const slot = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.008, 0.023), new THREE.MeshStandardMaterial({ color: 0x24241e, roughness: 1 }));
-        slot.position.set(0, -0.022, -0.2 + i * 0.05);
-        vent.add(slot);
-      }
-      vent.position.set(x * CELL, WALL_HEIGHT - 0.03, z * CELL);
+      const vent = grille.clone(); vent.position.set(x * CELL, WALL_HEIGHT - 0.012, z * CELL); vent.rotation.y = (x + z) % 2 ? Math.PI / 2 : 0;
       this.scene.add(vent);
     }
     // Discarded cardboard and a fallen office chair make the rooms feel abandoned.
     for (const [x, z] of [[7.55, 5.4], [4.6, 10.1], [12, 11.9], [18.6, 9.6], [8, 23.4]]) {
       this.addBox(x * CELL, z * CELL, 0.62, 0.5, 0.54);
-      if (x > 7) this.addBox(x * CELL + 0.48, z * CELL + 0.1, 0.42, 0.33, 0.42);
+      if (x > 7) this.addBox(x * CELL + 0.48, z * CELL + 0.1, 0.42, 0.33, 0.42, true);
     }
-    const chair = new THREE.Group();
-    const fabric = new THREE.MeshStandardMaterial({ color: 0x383a2d, roughness: 1 });
-    const metal = new THREE.MeshStandardMaterial({ color: 0x373a34, metalness: 0.6, roughness: 0.6 });
-    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.49, 0.085, 0.49), fabric);
-    seat.position.y = 0.48;
-    chair.add(seat);
-    const back = new THREE.Mesh(new THREE.BoxGeometry(0.47, 0.45, 0.075), fabric);
-    back.position.set(0, 0.75, 0.22);
-    chair.add(back);
-    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.43, 7), metal);
-    stem.position.y = 0.24;
-    chair.add(stem);
-    for (let i = 0; i < 5; i++) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.035, 0.52), metal);
-      leg.position.y = 0.055;
-      leg.rotation.y = i * Math.PI / 5;
-      chair.add(leg);
-    }
-    chair.rotation.z = Math.PI / 2.3;
-    chair.rotation.y = 0.8;
-    chair.position.set(8.2 * CELL, 0.22, 10.9 * CELL);
+    const chair = createOfficeChair(1);
+    chair.rotation.set(0, 0.8, Math.PI / 2 - .06, 'YXZ');
+    chair.position.set(8.2 * CELL, 0.33, 10.9 * CELL);
     this.scene.add(chair);
 
     const writingCanvas = document.createElement('canvas');
@@ -397,32 +446,23 @@ export class BackroomsGame {
     this.scene.add(graffiti);
   }
 
-  private addBox(x: number, z: number, width: number, height: number, depth: number) {
-    const box = new THREE.Group();
-    const mesh = new THREE.Mesh(new RoundedBoxGeometry(width, height, depth, 2, .012), new THREE.MeshStandardMaterial({ color: 0xb6a778, map: cardboardTexture(), roughness: .98 }));
-    mesh.position.y = height / 2;
-    mesh.castShadow = true;
-    box.add(mesh);
-    const tape = new THREE.Mesh(new THREE.BoxGeometry(width * 0.16, 0.002, depth + 0.003), new THREE.MeshStandardMaterial({ color: 0xa18d58, roughness: 0.55 }));
-    tape.position.y = height + 0.002;
-    box.add(tape);
-    const shipping = new THREE.Mesh(new THREE.PlaneGeometry(width * .57, height * .34), new THREE.MeshStandardMaterial({ map: labelTexture('↑ ↑  /  019', '#555840', '#b6b38f'), roughness: 1 }));
-    shipping.position.set(0, height * .56, depth / 2 + .013); box.add(shipping);
-    box.position.set(x, 0, z);
+  private boxSeed = 1;
+  private addBox(x: number, z: number, width: number, height: number, depth: number, open = false) {
+    const box = createCardboardBox(width, height, depth, this.boxSeed++, open);
+    box.position.set(x, 0, z); box.rotation.y = (this.boxSeed % 5 - 2) * .035;
     this.scene.add(box);
     this.obstacles.push({ x, z, w: width / 2 + 0.19, d: depth / 2 + 0.19 });
     return box;
   }
 
   private buildObjectives() {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x889280, map: wornMetalTexture(), roughness: .46, metalness: .7 });
     FUSE_CELLS.forEach((cell, index) => {
       const position = new THREE.Vector3(cell.x * CELL, .765, cell.z * CELL);
       this.addBox(position.x, position.z, .8, .62, .65);
       const group = createFuse(index); group.position.copy(position); this.scene.add(group);
       this.interactables.push({ type: 'fuse', position, object: group, index, taken: false });
     });
-    const switchboard = createSwitchboard(), panel = switchboard.group;
+    const switchboard = createSwitchboard(WALL_HEIGHT - 1.36 - .47), panel = switchboard.group;
     this.panelIndicator = switchboard.indicator; this.panelLamps = switchboard.lamps; this.panelLever = switchboard.lever;
     panel.position.set(PANEL_CELL.x * CELL, 1.36, (PANEL_CELL.z - .5) * CELL + .1);
     this.scene.add(panel);
@@ -430,28 +470,11 @@ export class BackroomsGame {
     FIELD_NOTES.forEach((note, index) => {
       const position = new THREE.Vector3(note.x * CELL, .51, note.z * CELL);
       this.addBox(position.x, position.z, .45, .49, .48);
-      const group = createArchive(index); group.position.copy(position); group.rotation.y = index * .6 + .2; this.scene.add(group);
+      const group = createArchive(index, note.title, note.text); group.position.copy(position); group.rotation.y = index * .6 + .2; this.scene.add(group);
       this.interactables.push({ type: 'note', position, object: group, index, taken: false });
     });
-    const exit = new THREE.Group();
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.55, 2.49, 0.14), new THREE.MeshStandardMaterial({ color: 0x33392f, roughness: 0.75, metalness: 0.25 }));
-    frame.position.y = 1.245;
-    exit.add(frame);
-    const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x696b54, roughness: 0.7, metalness: 0.28 });
-    for (const side of [-1, 1]) {
-      const door = new THREE.Mesh(new THREE.BoxGeometry(0.69, 2.3, 0.04), doorMaterial);
-      door.position.set(side * 0.36, 1.18, 0.093);
-      exit.add(door);
-      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.035, 0.045), steel);
-      handle.position.set(side * 0.14, 1.1, 0.14);
-      exit.add(handle);
-      const kickplate = new THREE.Mesh(new THREE.BoxGeometry(0.63, 0.22, 0.01), steel);
-      kickplate.position.set(side * 0.36, 0.25, 0.12);
-      exit.add(kickplate);
-    }
-    this.exitSign = new THREE.Mesh(new THREE.PlaneGeometry(1.04, 0.27), new THREE.MeshBasicMaterial({ map: labelTexture('ВЫХОД  →', '#c5c8a0', '#3e4c34') }));
-    this.exitSign.position.set(0, 2.67, 0.10);
-    exit.add(this.exitSign);
+    const { group: exit, sign } = createExitDoor();
+    this.exitSign = sign;
     exit.position.set(EXIT_CELL.x * CELL, 0, (EXIT_CELL.z - 0.5) * CELL + 0.1);
     this.scene.add(exit);
     this.interactables.push({ type: 'exit', position: exit.position.clone().setY(1.35), object: exit, index: -1, taken: false });
@@ -480,7 +503,7 @@ export class BackroomsGame {
 
   private syncObjectiveVisuals() {
     if (this.panelIndicator) (this.panelIndicator.material as THREE.MeshBasicMaterial).color.setHex(this.powered ? 0xa8e9ab : 0xac6240);
-    if (this.exitSign) (this.exitSign.material as THREE.MeshBasicMaterial).color.setHex(this.powered ? 0xa2ffb8 : 0xffffff);
+    if (this.exitSign) (this.exitSign.material as THREE.MeshBasicMaterial).color.setHex(this.powered ? 0xffffff : 0x6f8070);
     this.panelLamps.forEach((lamp, i) => (lamp.material as THREE.MeshBasicMaterial).color.setHex(i < this.fuses ? 0xa4d997 : 0x743b28));
     if (this.panelLever) this.panelLever.rotation.x = this.powered ? -.65 : .15;
   }
@@ -501,9 +524,16 @@ export class BackroomsGame {
       if (event.code === 'KeyE') this.interact();
       if (event.code === 'KeyF') this.toggleFlashlight();
       if (event.code === 'KeyH') this.showHint();
+      if (event.code === 'KeyC') this.zoomFocus = Math.max(this.zoomFocus, .5);
       if (event.code === 'Escape' || event.code === 'KeyP') this.pause();
     });
     window.addEventListener('keyup', event => this.keys.delete(event.code));
+    // Hold C and roll the wheel for optical zoom; the wheel alone never scrolls the page in-game.
+    window.addEventListener('wheel', event => {
+      if (this.state !== 'playing' || this.chatFocused || !this.zoomHeld()) return;
+      event.preventDefault();
+      this.adjustZoom(event.deltaY);
+    }, { passive: false });
     window.addEventListener('blur', () => { if (this.state === 'playing') this.pause(); });
     document.addEventListener('visibilitychange', () => { if (document.hidden && this.state === 'playing') this.pause(); });
     document.addEventListener('pointerlockchange', () => {
@@ -541,13 +571,25 @@ export class BackroomsGame {
 
   look(dx: number, dy: number) {
     if (this.state !== 'playing') return;
-    const sensitivity = 0.0007 + this.settings.sensitivity * 0.003;
+    // Sensitivity follows the field of view so a zoomed image stays controllable.
+    const sensitivity = (0.0007 + this.settings.sensitivity * 0.003) / this.zoom;
     this.motion.look(-dx * sensitivity, -dy * sensitivity);
     this.yaw -= dx * sensitivity;
     this.pitch = THREE.MathUtils.clamp(this.pitch - dy * sensitivity, -1.42, 1.42);
   }
 
   setVirtualMovement(x: number, y: number) { this.virtualMovement.set(x, y); }
+  /** Touch devices toggle zoom mode; pinching is not required. */
+  setTouchZoom(active: boolean) { this.touchZoom = active; if (active) this.zoomFocus = Math.max(this.zoomFocus, .5); }
+  setZoomPreset(value: number) { this.zoomPreset = THREE.MathUtils.clamp(value, 1.25, MAX_ZOOM); this.zoomFocus = Math.max(this.zoomFocus, .5); }
+  private zoomHeld() { return this.state === 'playing' && !this.chatFocused && (this.keys.has('KeyC') || this.touchZoom); }
+  adjustZoom(deltaY: number) {
+    const step = THREE.MathUtils.clamp(-deltaY, -240, 240) * .0018;
+    const next = THREE.MathUtils.clamp(this.zoomPreset * Math.exp(step), 1.25, MAX_ZOOM);
+    if (Math.abs(next - this.zoomPreset) < 1e-4) return;
+    this.zoomPreset = next; this.zoomFocus = Math.min(1, this.zoomFocus + .35);
+    if (this.time - this.lastZoomSound > .09) { this.lastZoomSound = this.time; this.audio.zoomMotor(); }
+  }
   setVirtualSprint(active: boolean) { this.virtualSprint = active; }
 
   start() {
@@ -571,6 +613,7 @@ export class BackroomsGame {
     this.hintUntil = 0;
     this.flashOn = true;
     this.chatFocused = false;
+    this.zoom = 1; this.zoomFocus = 0; this.touchZoom = false;
     this.camera.position.set(SPAWN.x * CELL, 1.63, SPAWN.z * CELL);
     this.camera.rotation.set(0, this.yaw, 0, 'YXZ');
     this.camera.fov = 72;
@@ -622,6 +665,8 @@ export class BackroomsGame {
     this.virtualMovement.set(0, 0);
     this.virtualSprint = false;
     this.dragLook = false;
+    this.touchZoom = false;
+    if (state !== 'playing' && state !== 'paused') { this.zoom = 1; this.zoomFocus = 0; }
     this.callbacks.onState(state);
   }
 
@@ -723,6 +768,7 @@ export class BackroomsGame {
     this.audio.setVolume(settings.volume);
     this.audio.setMuted(settings.muted);
     this.film.uniforms.grain.value = settings.grain ? 0.014 : 0;
+    this.film.uniforms.camcorder.value = settings.camcorder ? 1 : 0;
     const shadowSize = settings.quality === 'high' ? 1024 : 512;
     if (this.flashlight.shadow.mapSize.x !== shadowSize) { this.flashlight.shadow.mapSize.set(shadowSize, shadowSize); this.flashlight.shadow.map?.dispose(); this.flashlight.shadow.map = null; }
     this.renderer.shadowMap.enabled = settings.quality !== 'low';
@@ -771,7 +817,14 @@ export class BackroomsGame {
     this.motionPose = this.motion.update(dt, moving, sprint, input.x, this.settings.headBob, this.flashOn);
     this.camera.position.y = 1.63 + this.motionPose.height;
     this.camera.rotation.set(this.pitch + this.motionPose.pitch, this.yaw, this.motionPose.roll, 'YXZ');
-    this.camera.fov = this.motionPose.fov; this.camera.updateProjectionMatrix();
+    const targetZoom = this.zoomHeld() ? this.zoomPreset : 1;
+    const previousZoom = this.zoom;
+    this.zoom = THREE.MathUtils.damp(this.zoom, targetZoom, 7.5, dt);
+    if (Math.abs(this.zoom - targetZoom) < .002) this.zoom = targetZoom;
+    this.zoomFocus = Math.max(0, this.zoomFocus - dt * 1.6) + Math.min(.6, Math.abs(this.zoom - previousZoom) * 2.5);
+    this.zoomFocus = Math.min(1, this.zoomFocus);
+    this.camera.fov = this.zoom === 1 ? this.motionPose.fov : THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(this.motionPose.fov) / 2) / this.zoom));
+    this.camera.updateProjectionMatrix();
     if (moving) {
       this.stepTime += dt;
       if (this.stepTime > (sprint ? 0.3 : 0.49)) {
@@ -784,7 +837,7 @@ export class BackroomsGame {
     else if (!this.coop) this.danger = 0;
     this.audio.updateDanger(this.danger);
     this.audio.updateMotion(dt, this.stamina, sprint);
-    this.flashlight.intensity = (this.powered ? 32 : 37) * (this.danger > .6 ? .91 + Math.sin(this.time * 4) * .09 : 1);
+    this.flashlight.intensity = (this.powered ? 17.5 : 20) * (this.danger > .6 ? .91 + Math.sin(this.time * 4) * .09 : 1);
     this.target = this.findInteraction();
     return moving;
   }
@@ -949,7 +1002,7 @@ export class BackroomsGame {
   private updateLights() {
     const camera = this.camera.position;
     const nearest = [...this.fixtures].sort((a, b) => a.position.distanceToSquared(camera) - b.position.distanceToSquared(camera));
-    if (this.tubeMaterial) this.tubeMaterial.emissiveIntensity = 3.6 * this.lightLevel;
+    for (const material of this.tubeMaterials) material.emissiveIntensity = material.userData.baseEmissive * this.lightLevel;
     this.ambientLights.forEach((light, i) => { light.intensity = (i ? .13 : .48) * (.18 + .82 * this.lightLevel); });
     this.lights.forEach((light, index) => {
       const fixture = nearest[index];
@@ -990,6 +1043,7 @@ export class BackroomsGame {
       this.updateLights();
       this.film.uniforms.time.value = this.time;
       this.film.uniforms.danger.value = this.danger;
+      this.film.uniforms.focus.value = this.state === 'playing' || this.state === 'paused' ? this.zoomFocus : 0;
       this.composer.render();
       this.needsRender = false;
     }
@@ -1010,6 +1064,8 @@ export class BackroomsGame {
           action: this.target.type === 'note' ? 'Прочитать и настроить ориентир' : this.target.type === 'fuse' ? 'Забрать' : this.target.type === 'panel' ? this.powered ? 'Проверить' : 'Восстановить питание' : this.powered ? 'Открыть дверь' : 'Проверить дверь',
         } : null,
         hint: this.getHint(),
+        zoom: this.zoom,
+        zooming: this.zoomHeld(),
       });
     }
     this.animationId = requestAnimationFrame(this.frame);

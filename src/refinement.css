@@ -39,3 +39,33 @@
   .clean-secondary { margin-top: 10px; }
   .clean-footer > span { font-size: 9px; }
 }
+
+/* Camcorder viewfinder (1.4). Purely decorative and hidden with the setting. */
+.camcorder { position: absolute; inset: 0; pointer-events: none; font-family: var(--mono); color: #f2f0e4; text-shadow: 0 0 2px #000c, 1px 1px 0 #0009; }
+body.camcorder-off .camcorder { display: none; }
+.cam-corner { position: absolute; width: 34px; height: 24px; border-color: #f4f2e6cc; border-style: solid; border-width: 0; filter: drop-shadow(0 0 1px #000a); }
+.cam-corner.tl { left: 2.2%; top: 2.8%; border-left-width: 2px; border-top-width: 2px; }
+.cam-corner.tr { right: 2.2%; top: 2.8%; border-right-width: 2px; border-top-width: 2px; }
+.cam-corner.bl { left: 2.2%; bottom: 2.8%; border-left-width: 2px; border-bottom-width: 2px; }
+.cam-corner.br { right: 2.2%; bottom: 2.8%; border-right-width: 2px; border-bottom-width: 2px; }
+.cam-meta { position: absolute; right: 35px; top: 124px; display: flex; gap: 12px; align-items: center; font-size: 11px; letter-spacing: .12em; }
+.cam-battery { display: inline-flex; gap: 2px; padding: 2px 4px 2px 3px; border: 1.5px solid #f2f0e4cc; position: relative; }
+.cam-battery::after { content: ''; position: absolute; right: -5px; top: 3px; width: 3px; height: 5px; background: #f2f0e4cc; }
+.cam-battery i { width: 5px; height: 7px; background: #f2f0e4; }
+.cam-battery i.empty { background: transparent; }
+.cam-zoom { position: absolute; left: 50%; top: 40px; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; font-size: 12px; letter-spacing: .14em; opacity: 0; transition: opacity .35s; }
+.cam-zoom.active { opacity: 1; }
+.cam-zoom-track { width: 150px; height: 9px; border: 1.5px solid #f2f0e4cc; position: relative; overflow: hidden; }
+.cam-zoom-track i { position: absolute; inset: 1px; background: #f2f0e4; transform-origin: left; transform: scaleX(0); }
+.cam-zoom b { font-weight: 500; min-width: 42px; }
+.cam-stamp { position: absolute; right: 36px; bottom: 66px; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; font-size: 17px; letter-spacing: .1em; opacity: .92; }
+body.camcorder-off .hud-record { opacity: .9; }
+.zoom-button { font: 600 11px var(--mono); letter-spacing: .04em; }
+.zoom-button.active { background: #e4dfb455; }
+@media (max-width: 760px) {
+  .cam-corner { width: 22px; height: 16px; }
+  .cam-meta { top: 84px; right: 70px; font-size: 9px; gap: 8px; }
+  .cam-stamp { right: 22px; bottom: 100px; font-size: 12px; }
+  .cam-zoom { top: 92px; font-size: 10px; }
+  .cam-zoom-track { width: 90px; }
+}

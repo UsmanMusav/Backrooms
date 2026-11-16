@@ -74,3 +74,20 @@ test('procedural textures are deterministic', () => {
     assert.ok(value >= 0 && value < 1);
   }
 });
+
+test('surface variants are deterministic, weighted and actually vary across the map', async () => {
+  const { surfaceVariant } = await import('../src/level.ts');
+  const weights = [44, 13, 9, 13, 9, 12];
+  assert.deepEqual(surfaceVariant(7, 9, 2, weights, 5), surfaceVariant(7, 9, 2, weights, 5));
+  const counts = Array(weights.length).fill(0), turns = new Set<number>();
+  let mirrored = 0, total = 0;
+  for (let z = 0; z < 27; z++) for (let x = 0; x < 27; x++) for (let face = 0; face < 4; face++) {
+    const pick = surfaceVariant(x, z, face, weights, 5); counts[pick.variant]++; turns.add(pick.turn); if (pick.mirror) mirrored++; total++;
+  }
+  assert.ok(counts.every(count => count > 0), 'every authored variant appears');
+  assert.ok(counts[0] / total > .3 && counts[0] / total < .6, 'clean wallpaper stays the most common, damage is occasional');
+  assert.equal(turns.size, 4); assert.ok(mirrored / total > .35 && mirrored / total < .65);
+  let neighboursDiffer = 0;
+  for (let x = 1; x < 26; x++) if (surfaceVariant(x, 4, 0, weights, 5).variant !== surfaceVariant(x + 1, 4, 0, weights, 5).variant) neighboursDiffer++;
+  assert.ok(neighboursDiffer > 8, 'adjacent panels do not repeat one texture down a corridor');
+});

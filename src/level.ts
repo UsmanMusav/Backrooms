@@ -107,3 +107,16 @@ export function seededRandom(seed: number): () => number {
     return ((value ^ value >>> 14) >>> 0) / 4294967296;
   };
 }
+
+/**
+ * Deterministic texture-variant choice for one wall face or floor/ceiling tile.
+ * Weights keep clean surfaces most common so damage reads as occasional, not as a new pattern.
+ */
+export function surfaceVariant(x: number, z: number, face: number, weights: readonly number[], salt = 0) {
+  let h = Math.imul(x + 0x9e37, 0x85ebca6b) ^ Math.imul(z + 0x7f4a, 0xc2b2ae35) ^ Math.imul(face + 0x2d, 0x27d4eb2f) ^ Math.imul(salt + 1, 0x165667b1);
+  h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12; h = Math.imul(h, 0x297a2d39); h ^= h >>> 15;
+  const total = weights.reduce((sum, value) => sum + value, 0);
+  let pick = ((h >>> 0) / 4294967296) * total;
+  for (let i = 0; i < weights.length; i++) { pick -= weights[i]; if (pick < 0) return { variant: i, turn: (h >>> 8) & 3, mirror: ((h >>> 11) & 1) === 1 }; }
+  return { variant: weights.length - 1, turn: (h >>> 8) & 3, mirror: ((h >>> 11) & 1) === 1 };
+}
