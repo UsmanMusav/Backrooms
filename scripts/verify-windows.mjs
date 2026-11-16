@@ -38,7 +38,7 @@ while (offset < relocSize) {
 assert.equal(offset, relocSize);
 assert.ok(data.includes(Buffer.from('NODE_SEA_BLOB', 'utf16le')), 'Embedded SEA resource missing');
 assert.ok(data.includes(Buffer.from('NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2:1')), 'SEA fuse was not enabled');
-for (const asset of ['client/index.html', 'webview.node', 'icon.rgba', 'THIRD_PARTY_NOTICES.txt']) assert.ok(data.includes(Buffer.from(asset)), `${asset} missing`);
+for (const asset of ['client/index.html', 'client/models/explorer.glb', 'client/models/explorer-albedo.jpg', 'client/models/CC0-1.0.txt', 'webview.node', 'icon.rgba', 'THIRD_PARTY_NOTICES.txt']) assert.ok(data.includes(Buffer.from(asset)), `${asset} missing`);
 const resources = NtExecutableResource.from(NtExecutable.from(data));
 const version = Resource.VersionInfo.fromEntries(resources.entries)[0];
 assert.equal(version.getStringValues({ lang: 1033, codepage: 1200 }).ProductName, 'BACKROOMS MIMIC');

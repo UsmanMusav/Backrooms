@@ -9,8 +9,13 @@ import { CELL, WALL_HEIGHT, MAP_SIZE, SPAWN, FUSE_CELLS, PANEL_CELL, EXIT_CELL, 
 import type { Cell } from './level';
 import { MimicBrain } from '../shared/mimic';
 import type { Actor, ClientMessage, Pose, RoomView } from '../shared/protocol';
-import { ExplorerAvatar } from './avatar';
-import { wallpaperTexture, carpetTexture, ceilingTexture, labelTexture, stainTexture } from './textures';
+import { ExplorerAvatar, createViewArm } from './avatar';
+import { createTorch, createFuse, createSwitchboard, createArchive, wornMetalTexture } from './props';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { FirstPersonMotion } from './motion';
+import { TensionDirector, FIELD_NOTES } from './tension';
+import { enrichEnvironment } from './environment';
+import { wallpaperTexture, carpetTexture, ceilingTexture, labelTexture, stainTexture, surfaceMaps, cardboardTexture } from './textures';
 import { Soundscape } from './audio';
 import type { Settings } from './settings';
 
@@ -26,7 +31,7 @@ export type Snapshot = {
   interaction: { type: string; label: string; action: string } | null;
   hint: { x: number; y: number; distance: number; behind: boolean } | null;
 };
-type Interactable = { type: 'fuse' | 'panel' | 'exit'; position: THREE.Vector3; object: THREE.Group; index: number; taken: boolean };
+type Interactable = { type: 'fuse' | 'panel' | 'exit' | 'note'; position: THREE.Vector3; object: THREE.Group; index: number; taken: boolean };
 type LightFixture = { position: THREE.Vector3; strength: number; flicker: boolean };
 type Callbacks = {
   onState: (state: GameState) => void;
@@ -98,7 +103,17 @@ export class BackroomsGame {
   private stamina = 1;
   private exhausted = false;
   private stepTime = 0;
-  private walkPhase = 0;
+  private motion = new FirstPersonMotion();
+  private motionPose = this.motion.update(0, false, false, 0, false, false);
+  private viewArm?: ReturnType<typeof createViewArm>;
+  private pickupDip = 0;
+  private tension = new TensionDirector();
+  private lightLevel = 1;
+  private tubeMaterial?: THREE.MeshStandardMaterial;
+  private ambientLights: THREE.Light[] = [];
+  private panelLamps: THREE.Mesh[] = [];
+  private panelLever?: THREE.Group;
+  private wetZones: THREE.Vector2[] = [];
   private danger = 0;
   private flashOn = true;
   private flashlight: THREE.SpotLight;
@@ -126,7 +141,6 @@ export class BackroomsGame {
   private lastSprint = false;
   private remoteVisuals = new Map<string, { visual: ExplorerAvatar; actor: Actor; step: number }>();
   private hintUntil = 0;
-  private knockTimer = 20;
   private dragLook = false;
   private hadPointerLock = false;
   private skipMouseMoves = 0;
@@ -137,6 +151,8 @@ export class BackroomsGame {
   private menuLookAt = new THREE.Vector3(CELL * 8.5, 1.45, CELL * 10.8);
   private animationId = 0;
   private needsRender = true;
+  private menuAnimated = true;
+  private lastBackgroundRender = -1;
   private resizeObserver: ResizeObserver;
 
   constructor(container: HTMLElement, settings: Settings, callbacks: Callbacks) {
@@ -146,19 +162,19 @@ export class BackroomsGame {
     this.renderer.setClearColor(0x242318);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.25;
+    this.renderer.toneMappingExposure = 1.12;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.className = 'game-canvas';
     this.renderer.domElement.setAttribute('aria-label', 'Трёхмерный лабиринт Backrooms');
     container.appendChild(this.renderer.domElement);
-    this.scene.fog = new THREE.FogExp2(0x29281c, 0.026);
-    this.scene.background = new THREE.Color(0x29281c);
+    this.scene.fog = new THREE.FogExp2(0x282c21, 0.023);
+    this.scene.background = new THREE.Color(0x282c21);
     this.scene.add(this.camera);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 768), 0.26, 0.6, 1.05);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 768), 0.23, 0.7, 1.05);
     this.composer.addPass(bloom);
     this.film = new ShaderPass(FilmShader);
     this.composer.addPass(this.film);
@@ -167,13 +183,19 @@ export class BackroomsGame {
     this.buildArchitecture();
     this.buildFixtures();
     this.buildDetails();
+    enrichEnvironment(this.scene, this.map);
     this.buildObjectives();
     this.buildEntity();
 
-    this.flashlight = new THREE.SpotLight(0xfff2cc, 40, 23, 0.40, 0.65, 1.4);
+    this.flashlight = new THREE.SpotLight(0xfff2d5, 37, 25, 0.40, 0.62, 1.4);
     // Put the emitter just beyond the lens, not behind the view-model: otherwise
     // the hand is lit by its own high-intensity spotlight at centimetre range.
-    this.flashlight.position.set(0.24, -0.2, -0.65);
+    this.flashlight.position.set(-0.24, -0.2, -0.65);
+    const beam = document.createElement('canvas'); beam.width = beam.height = 256;
+    const b = beam.getContext('2d')!, gradient = b.createRadialGradient(128, 128, 1, 128, 128, 128);
+    gradient.addColorStop(0, '#ffffff'); gradient.addColorStop(.3, '#eeeeea'); gradient.addColorStop(.55, '#c5c5bf'); gradient.addColorStop(.78, '#8c8d85'); gradient.addColorStop(1, '#000000');
+    b.fillStyle = gradient; b.fillRect(0, 0, 256, 256);
+    this.flashlight.map = new THREE.CanvasTexture(beam);
     this.flashlight.castShadow = true;
     this.flashlight.shadow.mapSize.set(1024, 1024);
     this.flashlight.shadow.bias = -0.00025;
@@ -209,15 +231,15 @@ export class BackroomsGame {
 
   private buildArchitecture() {
     const wallTex = wallpaperTexture();
-    const wallMaterial = new THREE.MeshStandardMaterial({ map: wallTex, bumpMap: wallTex, bumpScale: 0.021, roughness: 0.96, color: 0xeee6bd });
+    const wallMaterial = new THREE.MeshStandardMaterial({ map: wallTex, ...surfaceMaps(wallTex, 2.2, .91), normalScale: new THREE.Vector2(.65, .65), roughness: 1, color: 0xf3e9c3 });
     const floorTex = carpetTexture();
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL), new THREE.MeshStandardMaterial({ map: floorTex, bumpMap: floorTex, bumpScale: 0.035, roughness: 1, color: 0xc2b58b }));
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL), new THREE.MeshStandardMaterial({ map: floorTex, ...surfaceMaps(floorTex, 3, .98), normalScale: new THREE.Vector2(.8, .8), roughness: 1, color: 0xc3bc9b }));
     floor.rotation.x = -Math.PI / 2;
     floor.position.set((MAP_SIZE - 1) * CELL / 2, 0, (MAP_SIZE - 1) * CELL / 2);
     floor.receiveShadow = true;
     this.scene.add(floor);
     const ceilingTex = ceilingTexture();
-    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL), new THREE.MeshStandardMaterial({ map: ceilingTex, roughness: 1, color: 0xcecdb5 }));
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE * CELL, MAP_SIZE * CELL), new THREE.MeshStandardMaterial({ map: ceilingTex, ...surfaceMaps(ceilingTex, 1.6, .96), roughness: 1, color: 0xd4d5bf }));
     ceiling.rotation.x = Math.PI / 2;
     ceiling.position.copy(floor.position).setY(WALL_HEIGHT);
     ceiling.receiveShadow = true;
@@ -250,8 +272,8 @@ export class BackroomsGame {
     this.scene.add(new THREE.Mesh(mergeGeometries(crowns), new THREE.MeshStandardMaterial({ color: 0x858269, roughness: 1 })));
     [...walls, ...trims, ...crowns].forEach(geometry => geometry.dispose());
 
-    this.scene.add(new THREE.HemisphereLight(0xc6c6a2, 0x3c3017, 0.62));
-    this.scene.add(new THREE.AmbientLight(0xb7ab7c, 0.16));
+    this.ambientLights = [new THREE.HemisphereLight(0xb8c6ac, 0x3b341c, .48), new THREE.AmbientLight(0xb3b08b, .13)];
+    this.scene.add(...this.ambientLights);
   }
 
   private buildFixtures() {
@@ -283,10 +305,11 @@ export class BackroomsGame {
     });
     this.scene.add(new THREE.Mesh(mergeGeometries(frames), new THREE.MeshStandardMaterial({ color: 0x777660, roughness: 0.58, metalness: 0.3 })));
     this.scene.add(new THREE.Mesh(mergeGeometries(backs), new THREE.MeshStandardMaterial({ color: 0xdbd9be, emissive: 0xc6cfaa, emissiveIntensity: 0.38, roughness: 0.5 })));
-    this.scene.add(new THREE.Mesh(mergeGeometries(bulbs), new THREE.MeshStandardMaterial({ color: 0xfff9df, emissive: 0xfff3c8, emissiveIntensity: 4 })));
+    this.tubeMaterial = new THREE.MeshStandardMaterial({ color: 0xf4f8de, emissive: 0xf1ffce, emissiveIntensity: 3.6 });
+    this.scene.add(new THREE.Mesh(mergeGeometries(bulbs), this.tubeMaterial));
     [...frames, ...backs, ...bulbs].forEach(geometry => geometry.dispose());
-    for (let i = 0; i < 8; i++) {
-      const light = new THREE.PointLight(0xffebba, 16, 10.5, 1.65);
+    for (let i = 0; i < 10; i++) {
+      const light = new THREE.PointLight(i % 3 ? 0xfff0c9 : 0xdeedc3, 16, 10.8, 1.7);
       this.lights.push(light);
       this.scene.add(light);
     }
@@ -304,6 +327,13 @@ export class BackroomsGame {
       mesh.rotation.z = random() * Math.PI;
       mesh.position.set(x * CELL, 0.007, z * CELL);
       this.scene.add(mesh);
+    }
+    const damp = new THREE.MeshPhysicalMaterial({ map: stain, transparent: true, opacity: .28, roughness: .19, metalness: .04, clearcoat: .7, clearcoatRoughness: .25, depthWrite: false, color: 0x666747 });
+    for (const [x, z] of [[4, 7], [8, 12], [5, 17], [13, 6], [18, 15], [23, 18]]) {
+      const patch = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.1), damp);
+      patch.rotation.x = -Math.PI / 2; patch.rotation.z = random() * 3;
+      patch.position.set(x * CELL, .013, z * CELL); this.scene.add(patch);
+      this.wetZones.push(new THREE.Vector2(x * CELL, z * CELL));
     }
     const ventMaterial = new THREE.MeshStandardMaterial({ color: 0x777361, roughness: 0.7, metalness: 0.35 });
     for (const [x, z] of [[3, 5], [8, 8], [12, 3], [5, 18], [21, 10], [15, 20]]) {
@@ -369,13 +399,15 @@ export class BackroomsGame {
 
   private addBox(x: number, z: number, width: number, height: number, depth: number) {
     const box = new THREE.Group();
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), new THREE.MeshStandardMaterial({ color: 0x8c794c, roughness: 1 }));
+    const mesh = new THREE.Mesh(new RoundedBoxGeometry(width, height, depth, 2, .012), new THREE.MeshStandardMaterial({ color: 0xb6a778, map: cardboardTexture(), roughness: .98 }));
     mesh.position.y = height / 2;
     mesh.castShadow = true;
     box.add(mesh);
     const tape = new THREE.Mesh(new THREE.BoxGeometry(width * 0.16, 0.002, depth + 0.003), new THREE.MeshStandardMaterial({ color: 0xa18d58, roughness: 0.55 }));
     tape.position.y = height + 0.002;
     box.add(tape);
+    const shipping = new THREE.Mesh(new THREE.PlaneGeometry(width * .57, height * .34), new THREE.MeshStandardMaterial({ map: labelTexture('↑ ↑  /  019', '#555840', '#b6b38f'), roughness: 1 }));
+    shipping.position.set(0, height * .56, depth / 2 + .013); box.add(shipping);
     box.position.set(x, 0, z);
     this.scene.add(box);
     this.obstacles.push({ x, z, w: width / 2 + 0.19, d: depth / 2 + 0.19 });
@@ -383,55 +415,24 @@ export class BackroomsGame {
   }
 
   private buildObjectives() {
-    const steel = new THREE.MeshStandardMaterial({ color: 0x55584e, roughness: 0.68, metalness: 0.58 });
-    const black = new THREE.MeshStandardMaterial({ color: 0x151813, roughness: 0.6 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x889280, map: wornMetalTexture(), roughness: .46, metalness: .7 });
     FUSE_CELLS.forEach((cell, index) => {
-      const position = new THREE.Vector3(cell.x * CELL, 0.84, cell.z * CELL);
-      this.addBox(position.x, position.z, 0.8, 0.62, 0.65);
-      const group = new THREE.Group();
-      const base = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.07, 0.3), black);
-      base.position.y = -0.14;
-      group.add(base);
-      const fuse = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.065, 0.3, 12), new THREE.MeshStandardMaterial({ color: 0xebc37d, emissive: 0x90602a, emissiveIntensity: 0.45, roughness: 0.28, metalness: 0.3 }));
-      fuse.rotation.z = Math.PI / 2;
-      group.add(fuse);
-      for (const direction of [-1, 1]) {
-        const contact = new THREE.Mesh(new THREE.CylinderGeometry(0.073, 0.073, 0.08, 12), steel);
-        contact.rotation.z = Math.PI / 2;
-        contact.position.x = direction * 0.16;
-        group.add(contact);
-      }
-      const beacon = new THREE.PointLight(0xffb057, 1.5, 3, 1.5);
-      beacon.position.y = 0.22;
-      group.add(beacon);
-      const led = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffad57 }));
-      led.position.set(0.18, -0.09, 0.07);
-      group.add(led);
-      group.position.copy(position);
-      this.scene.add(group);
+      const position = new THREE.Vector3(cell.x * CELL, .765, cell.z * CELL);
+      this.addBox(position.x, position.z, .8, .62, .65);
+      const group = createFuse(index); group.position.copy(position); this.scene.add(group);
       this.interactables.push({ type: 'fuse', position, object: group, index, taken: false });
     });
-
-    const panel = new THREE.Group();
-    panel.add(new THREE.Mesh(new THREE.BoxGeometry(0.67, 0.83, 0.13), steel));
-    const inset = new THREE.Mesh(new THREE.BoxGeometry(0.57, 0.58, 0.025), black);
-    inset.position.z = 0.08;
-    panel.add(inset);
-    for (let i = 0; i < 3; i++) {
-      const socket = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.27, 0.04), steel);
-      socket.position.set((i - 1) * 0.16, -0.025, 0.105);
-      panel.add(socket);
-    }
-    this.panelIndicator = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8), new THREE.MeshBasicMaterial({ color: 0xc7733c }));
-    this.panelIndicator.position.set(0.23, 0.32, 0.087);
-    panel.add(this.panelIndicator);
-    panel.position.set(PANEL_CELL.x * CELL, 1.36, (PANEL_CELL.z - 0.5) * CELL + 0.09);
+    const switchboard = createSwitchboard(), panel = switchboard.group;
+    this.panelIndicator = switchboard.indicator; this.panelLamps = switchboard.lamps; this.panelLever = switchboard.lever;
+    panel.position.set(PANEL_CELL.x * CELL, 1.36, (PANEL_CELL.z - .5) * CELL + .1);
     this.scene.add(panel);
     this.interactables.push({ type: 'panel', position: panel.position.clone(), object: panel, index: -1, taken: false });
-    const warning = new THREE.Mesh(new THREE.PlaneGeometry(0.47, 0.13), new THREE.MeshBasicMaterial({ map: labelTexture('⚡  220 V', '#181c17', '#b2a56b') }));
-    warning.position.copy(panel.position).add(new THREE.Vector3(0, 0.54, 0));
-    this.scene.add(warning);
-
+    FIELD_NOTES.forEach((note, index) => {
+      const position = new THREE.Vector3(note.x * CELL, .51, note.z * CELL);
+      this.addBox(position.x, position.z, .45, .49, .48);
+      const group = createArchive(index); group.position.copy(position); group.rotation.y = index * .6 + .2; this.scene.add(group);
+      this.interactables.push({ type: 'note', position, object: group, index, taken: false });
+    });
     const exit = new THREE.Group();
     const frame = new THREE.Mesh(new THREE.BoxGeometry(1.55, 2.49, 0.14), new THREE.MeshStandardMaterial({ color: 0x33392f, roughness: 0.75, metalness: 0.25 }));
     frame.position.y = 1.245;
@@ -457,43 +458,31 @@ export class BackroomsGame {
   }
 
   private buildFlashlight() {
-    const dark = new THREE.MeshStandardMaterial({ color: 0x292e28, roughness: 0.58, metalness: 0.45 });
-    const rubber = new THREE.MeshStandardMaterial({ color: 0x20251e, roughness: 0.94 });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.032, 0.22, 20), dark);
-    body.rotation.x = Math.PI / 2;
-    this.flashlightModel.add(body);
-    const head = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.035, 0.07, 24), dark);
-    head.rotation.x = Math.PI / 2;
-    head.position.z = -0.13;
-    this.flashlightModel.add(head);
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.052, 0.004, 6, 24), rubber);
-    rim.position.z = -0.167;
-    this.flashlightModel.add(rim);
-    for (let i = 0; i < 7; i++) {
-      const grip = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.0018, 4, 18), rubber);
-      grip.position.z = -0.065 + i * 0.018;
-      this.flashlightModel.add(grip);
-    }
-    const glove = new THREE.MeshStandardMaterial({ color: 0x4a4e3c, roughness: 0.95 });
-    const palm = new THREE.Mesh(new THREE.CapsuleGeometry(0.036, 0.043, 5, 12), glove);
-    palm.position.set(0.005, -0.03, 0.04);
-    palm.rotation.x = -0.4;
-    this.flashlightModel.add(palm);
-    for (let i = 0; i < 4; i++) {
-      const finger = new THREE.Mesh(new THREE.CapsuleGeometry(0.011, 0.035, 4, 8), glove);
-      finger.rotation.z = Math.PI / 2.3;
-      finger.position.set(-0.009, 0.012, 0.003 + i * 0.019);
-      this.flashlightModel.add(finger);
-    }
-    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.068, 0.24, 14), new THREE.MeshStandardMaterial({ color: 0x323a2e, roughness: 1 }));
-    sleeve.rotation.x = -0.55;
-    sleeve.position.set(0.005, -0.13, 0.12);
-    this.flashlightModel.add(sleeve);
-    this.flashlightModel.scale.setScalar(0.9);
-    this.flashlightModel.position.set(0.24, -0.245, -0.46);
-    this.flashlightModel.rotation.y = -0.08;
-    this.flashlightModel.visible = false;
-    this.camera.add(this.flashlightModel);
+    this.flashlightModel.name = 'FirstPersonFlashlight';
+    const torch = createTorch(); this.flashlightModel.add(torch);
+    this.viewArm = createViewArm(); this.flashlightModel.add(this.viewArm.root);
+    this.flashlightModel.scale.setScalar(.95);
+    this.flashlightModel.position.set(-.25, -.27, -.48);
+    this.flashlightModel.visible = false; this.camera.add(this.flashlightModel);
+  }
+
+  private updateFlashlight(dt: number) {
+    if (this.state === 'menu' || this.state === 'dead' || this.state === 'won') return;
+    // Continue the draw/holster transition while paused, without moving the player.
+    if (this.state === 'paused') this.motionPose = this.motion.update(dt, false, false, 0, false, this.flashOn);
+    const p = this.motionPose, lower = 1 - p.draw;
+    this.pickupDip = Math.max(0, this.pickupDip - dt * 2.5);
+    this.flashlightModel.visible = p.visible;
+    this.flashlightModel.position.set(-.25 + p.handX, -.27 + p.handY - lower * .56 - Math.sin(this.pickupDip * Math.PI) * .06, -.48 + lower * .13);
+    this.flashlightModel.rotation.set(lower * 1.15, -.04 + p.handYaw, p.handRoll - lower * .25);
+    if (this.state === 'paused' && this.motion.raised !== (this.flashOn ? 1 : 0)) this.needsRender = true;
+  }
+
+  private syncObjectiveVisuals() {
+    if (this.panelIndicator) (this.panelIndicator.material as THREE.MeshBasicMaterial).color.setHex(this.powered ? 0xa8e9ab : 0xac6240);
+    if (this.exitSign) (this.exitSign.material as THREE.MeshBasicMaterial).color.setHex(this.powered ? 0xa2ffb8 : 0xffffff);
+    this.panelLamps.forEach((lamp, i) => (lamp.material as THREE.MeshBasicMaterial).color.setHex(i < this.fuses ? 0xa4d997 : 0x743b28));
+    if (this.panelLever) this.panelLever.rotation.x = this.powered ? -.65 : .15;
   }
 
   private buildEntity() {
@@ -553,6 +542,7 @@ export class BackroomsGame {
   look(dx: number, dy: number) {
     if (this.state !== 'playing') return;
     const sensitivity = 0.0007 + this.settings.sensitivity * 0.003;
+    this.motion.look(-dx * sensitivity, -dy * sensitivity);
     this.yaw -= dx * sensitivity;
     this.pitch = THREE.MathUtils.clamp(this.pitch - dy * sensitivity, -1.42, 1.42);
   }
@@ -575,23 +565,23 @@ export class BackroomsGame {
     this.danger = 0;
     this.pitch = 0;
     this.yaw = -2.65;
-    this.walkPhase = 0;
+    this.motion.reset(); this.pickupDip = 0;
+    this.lightLevel = 1; this.tension.reset(7813);
+    this.mimicVisual.reset();
     this.hintUntil = 0;
     this.flashOn = true;
     this.chatFocused = false;
-    this.knockTimer = 22;
     this.camera.position.set(SPAWN.x * CELL, 1.63, SPAWN.z * CELL);
     this.camera.rotation.set(0, this.yaw, 0, 'YXZ');
     this.camera.fov = 72;
     this.camera.updateProjectionMatrix();
-    this.interactables.filter(item => item.type === 'fuse').forEach(item => {
+    this.interactables.filter(item => item.type === 'fuse' || item.type === 'note').forEach(item => {
       item.taken = false;
       item.object.visible = true;
     });
-    if (this.panelIndicator) (this.panelIndicator.material as THREE.MeshBasicMaterial).color.setHex(0xc7733c);
-    if (this.exitSign) (this.exitSign.material as THREE.MeshBasicMaterial).color.setHex(0xffffff);
+    this.syncObjectiveVisuals();
     this.flashlight.visible = true;
-    this.flashlightModel.visible = true;
+    this.flashlightModel.visible = false;
     this.setState('playing');
     void this.audio.unlock().then(() => this.audio.setActive(this.state === 'playing'));
     this.callbacks.onMessage(this.coop ? 'Предохранители общие. Не теряйте напарников. T — текстовая рация, Q — короткий сигнал.' : 'Найдите три предохранителя. Восстановите питание щитка у входа.', this.coop ? 'КООПЕРАТИВ · MIMIC' : 'ВЫ НЕ ПОМНИТЕ, КАК СЮДА ПОПАЛИ');
@@ -612,9 +602,10 @@ export class BackroomsGame {
   }
 
   menu() {
-    this.setState('menu');
+    this.setState('menu'); this.menuAnimated = true;
     if (document.pointerLockElement) document.exitPointerLock();
     this.audio.setActive(false);
+    this.lightLevel = 1; this.motion.reset();
     this.flashlight.visible = false;
     this.flashlightModel.visible = false;
     this.entity.visible = false;
@@ -644,12 +635,20 @@ export class BackroomsGame {
   showHint() {
     if (this.state !== 'playing') return;
     this.hintUntil = this.elapsed + 12;
+    this.audio.hint();
     this.callbacks.onMessage(this.fuses < 3 ? 'Метка указывает на ближайший предохранитель. Ищите обход через соседние комнаты.' : this.powered ? 'Выход у входа теперь открыт.' : 'Вернитесь к электрическому щитку у входа.', 'СЛАБЫЙ СИГНАЛ · 12 СЕК');
   }
 
   interact() {
     if (this.state !== 'playing' || !this.target) return;
     const item = this.target;
+    if (item.type === 'note') {
+      item.taken = true; item.object.visible = false;
+      const note = FIELD_NOTES[item.index]; this.audio.note(); this.pickupDip = 1;
+      this.hintUntil = this.elapsed + 20;
+      this.callbacks.onMessage(note.text, note.title + ' · ОРИЕНТИР 20 СЕК'); this.target = null;
+      return; // Field notes are local discoveries, never spoof network objective actions.
+    }
     if (this.coop) {
       this.networkSend?.({ t: 'interact', interaction: { kind: item.type, index: item.index } });
       this.target = null;
@@ -658,7 +657,7 @@ export class BackroomsGame {
     if (item.type === 'fuse') {
       item.taken = true;
       item.object.visible = false;
-      this.fuses++;
+      this.fuses++; this.pickupDip = 1; this.syncObjectiveVisuals();
       this.audio.pickup();
       if (this.fuses === 1) {
         this.activateEntity();
@@ -673,13 +672,13 @@ export class BackroomsGame {
         this.audio.toggle();
       } else if (!this.powered) {
         this.powered = true;
-        if (this.panelIndicator) (this.panelIndicator.material as THREE.MeshBasicMaterial).color.setHex(0x83ffad);
-        if (this.exitSign) (this.exitSign.material as THREE.MeshBasicMaterial).color.setHex(0x86ffa8);
+        this.syncObjectiveVisuals(); this.pickupDip = 1;
         this.audio.powerOn();
         this.callbacks.onMessage('Питание восстановлено. Дверь рядом со щитком открыта. Уходите.', 'ВЫХОД ДОСТУПЕН');
         this.hintUntil = this.elapsed + 30;
       } else this.callbacks.onMessage('Дверь справа от щитка открыта.', 'ПИТАНИЕ ВОССТАНОВЛЕНО');
     } else if (item.type === 'exit') {
+      this.audio.door(!this.powered);
       if (!this.powered) this.callbacks.onMessage('Электронный замок не отвечает. Найдите предохранители и включите щиток.', 'НЕТ ПИТАНИЯ');
       else this.finish(true);
     }
@@ -698,14 +697,36 @@ export class BackroomsGame {
     if (document.pointerLockElement) document.exitPointerLock();
     this.audio.end(won);
     if (!won) this.danger = 1;
-    this.flashlightModel.visible = false;
+    this.flashlightModel.visible = false; this.flashlight.visible = false; this.motion.reset();
+  }
+
+  setMenuAnimation(active: boolean) { this.menuAnimated = active; this.needsRender = true; }
+
+  private configureVisualQuality(root: THREE.Object3D = this.scene) {
+    const detail = this.settings.quality !== 'low';
+    root.traverse(object => {
+      if (!(object instanceof THREE.Mesh)) return;
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+        if (!(material instanceof THREE.MeshStandardMaterial)) continue;
+        if (!material.userData.surfaceMaps) material.userData.surfaceMaps = { normal: material.normalMap, roughness: material.roughnessMap, clearcoat: material instanceof THREE.MeshPhysicalMaterial ? material.clearcoat : 0 };
+        const maps = material.userData.surfaceMaps;
+        const normal = detail ? maps.normal : null, roughness = detail ? maps.roughness : null;
+        if (material.normalMap !== normal || material.roughnessMap !== roughness) { material.normalMap = normal; material.roughnessMap = roughness; material.needsUpdate = true; }
+        if (material instanceof THREE.MeshPhysicalMaterial) { const clearcoat = detail ? maps.clearcoat : 0; if (material.clearcoat !== clearcoat) { material.clearcoat = clearcoat; material.needsUpdate = true; } }
+      }
+    });
+    for (const item of this.interactables) if (item.type === 'fuse') item.object.traverse(object => { if (object instanceof THREE.PointLight) object.visible = detail; });
   }
 
   applySettings(settings: Settings) {
     this.settings = settings;
     this.audio.setVolume(settings.volume);
     this.audio.setMuted(settings.muted);
-    this.film.uniforms.grain.value = settings.grain ? 0.016 : 0;
+    this.film.uniforms.grain.value = settings.grain ? 0.014 : 0;
+    const shadowSize = settings.quality === 'high' ? 1024 : 512;
+    if (this.flashlight.shadow.mapSize.x !== shadowSize) { this.flashlight.shadow.mapSize.set(shadowSize, shadowSize); this.flashlight.shadow.map?.dispose(); this.flashlight.shadow.map = null; }
+    this.renderer.shadowMap.enabled = settings.quality !== 'low';
+    this.configureVisualQuality();
     this.resize();
   }
 
@@ -747,32 +768,24 @@ export class BackroomsGame {
     // Separate axes allow sliding along walls instead of getting stuck at corners.
     if (this.positionAllowed(this.camera.position.x + dx, this.camera.position.z)) this.camera.position.x += dx;
     if (this.positionAllowed(this.camera.position.x, this.camera.position.z + dz)) this.camera.position.z += dz;
-    this.walkPhase += dt * (moving ? sprint ? 12.5 : 8.7 : 0);
-    const bob = this.settings.headBob && moving ? Math.sin(this.walkPhase) * (sprint ? 0.036 : 0.021) : 0;
-    this.camera.position.y = THREE.MathUtils.lerp(this.camera.position.y, 1.63 + bob, Math.min(dt * 15, 1));
-    this.camera.rotation.set(this.pitch, this.yaw, this.settings.headBob && moving ? Math.sin(this.walkPhase / 2) * 0.0025 : 0, 'YXZ');
-    this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, sprint ? 77 : 72, dt * 5);
-    this.camera.updateProjectionMatrix();
-    this.flashlightModel.position.y = -0.245 + (moving ? Math.sin(this.walkPhase) * 0.008 : Math.sin(this.time * 1.2) * 0.002);
-    this.flashlightModel.position.x = 0.24 + (moving ? Math.cos(this.walkPhase / 2) * 0.008 : 0);
+    this.motionPose = this.motion.update(dt, moving, sprint, input.x, this.settings.headBob, this.flashOn);
+    this.camera.position.y = 1.63 + this.motionPose.height;
+    this.camera.rotation.set(this.pitch + this.motionPose.pitch, this.yaw, this.motionPose.roll, 'YXZ');
+    this.camera.fov = this.motionPose.fov; this.camera.updateProjectionMatrix();
     if (moving) {
       this.stepTime += dt;
       if (this.stepTime > (sprint ? 0.3 : 0.49)) {
         this.stepTime = 0;
-        this.audio.footstep(sprint);
+        this.audio.footstep(sprint, this.wetZones.some(p => Math.hypot(p.x - this.camera.position.x, p.y - this.camera.position.z) < 1.05));
       }
     } else this.stepTime = 0.25;
 
     if (!this.coop && this.entityActive) this.updateEntity(dt, sprint, moving);
     else if (!this.coop) this.danger = 0;
     this.audio.updateDanger(this.danger);
-    this.flashlight.intensity = (this.powered ? 33 : 40) * (this.danger > 0.6 && Math.sin(this.time * 39) > 0.88 ? 0.55 : 1);
+    this.audio.updateMotion(dt, this.stamina, sprint);
+    this.flashlight.intensity = (this.powered ? 32 : 37) * (this.danger > .6 ? .91 + Math.sin(this.time * 4) * .09 : 1);
     this.target = this.findInteraction();
-    this.knockTimer -= dt;
-    if (this.knockTimer < 0) {
-      this.knockTimer = 24 + Math.random() * 27;
-      this.audio.knock();
-    }
     return moving;
   }
 
@@ -795,11 +808,11 @@ export class BackroomsGame {
       if (this.entityStepTime > (brain.actor.sprint ? 0.32 : 0.49)) {
         this.entityStepTime = 0;
         const pan = ((pos.x - player.x) * Math.cos(this.yaw) - (pos.z - player.z) * Math.sin(this.yaw)) / Math.max(distance, 0.01);
-        this.audio.creatureStep(distance, pan, !sight);
+        this.audio.creatureStep(distance, pan, !sight, brain.phase === 'revealed');
       }
     }
     if (event.speech) this.callbacks.onMessage(event.speech, brain.actor.name.toUpperCase() + ' / РАЦИЯ');
-    if (event.revealedNow) { this.audio.knock(); this.callbacks.onMessage('Это не ваш напарник. Бегите.', 'MIMIC / БИОСИГНАЛ НЕ СОВПАДАЕТ'); }
+    if (event.revealedNow) { this.audio.reveal(); this.callbacks.onMessage('Это не ваш напарник. Бегите.', 'MIMIC / БИОСИГНАЛ НЕ СОВПАДАЕТ'); }
     if (event.victim) this.finish(false);
   }
 
@@ -841,6 +854,7 @@ export class BackroomsGame {
       for (const remote of this.remoteVisuals.values()) remote.visual.dispose();
       this.remoteVisuals.clear();
       this.start();
+      this.tension.reset(room.round * 983 + [...room.code].reduce((n, c) => n + c.charCodeAt(0), 0));
       this.camera.position.x = own.x;
       this.camera.position.z = own.z;
     }
@@ -851,8 +865,7 @@ export class BackroomsGame {
     const justPowered = !this.powered && room.powered;
     this.powered = room.powered;
     for (const item of this.interactables) if (item.type === 'fuse') { item.taken = room.fuses[item.index]; item.object.visible = !item.taken; }
-    if (this.panelIndicator) (this.panelIndicator.material as THREE.MeshBasicMaterial).color.setHex(this.powered ? 0x83ffad : 0xc7733c);
-    if (this.exitSign) (this.exitSign.material as THREE.MeshBasicMaterial).color.setHex(this.powered ? 0x86ffa8 : 0xffffff);
+    this.syncObjectiveVisuals();
     if (justPowered) this.audio.powerOn();
     if (Math.hypot(own.x - this.camera.position.x, own.z - this.camera.position.z) > 1.1) { this.camera.position.x = own.x; this.camera.position.z = own.z; }
     const ids = new Set(room.actors.map(actor => actor.id));
@@ -862,10 +875,11 @@ export class BackroomsGame {
       let remote = this.remoteVisuals.get(actor.id);
       if (!remote) {
         const visual = new ExplorerAvatar();
-        this.scene.add(visual.group);
+        this.scene.add(visual.group); this.configureVisualQuality(visual.group);
         remote = { visual, actor, step: 0 };
         this.remoteVisuals.set(actor.id, remote);
       }
+      if (actor.revealed && !remote.actor.revealed) this.audio.reveal();
       remote.actor = actor;
     }
     this.needsRender = true;
@@ -886,7 +900,7 @@ export class BackroomsGame {
         if (remote.step > (actor.sprint ? 0.32 : 0.49)) {
           remote.step = 0;
           const pan = ((actor.x - this.camera.position.x) * Math.cos(this.yaw) - (actor.z - this.camera.position.z) * Math.sin(this.yaw)) / Math.max(d, 0.01);
-          this.audio.creatureStep(d, pan, !sight);
+          this.audio.creatureStep(d, pan, !sight, !!actor.revealed);
         }
       }
     }
@@ -935,12 +949,16 @@ export class BackroomsGame {
   private updateLights() {
     const camera = this.camera.position;
     const nearest = [...this.fixtures].sort((a, b) => a.position.distanceToSquared(camera) - b.position.distanceToSquared(camera));
+    if (this.tubeMaterial) this.tubeMaterial.emissiveIntensity = 3.6 * this.lightLevel;
+    this.ambientLights.forEach((light, i) => { light.intensity = (i ? .13 : .48) * (.18 + .82 * this.lightLevel); });
     this.lights.forEach((light, index) => {
       const fixture = nearest[index];
-      if (!fixture) { light.intensity = 0; return; }
+      light.visible = index < (this.settings.quality === 'low' ? 5 : this.settings.quality === 'medium' ? 8 : 10);
+      if (!fixture || !light.visible) { light.intensity = 0; return; }
       light.position.copy(fixture.position);
       const flicker = fixture.flicker && (Math.sin(this.time * 17.3 + fixture.position.x) > 0.94 || Math.sin(this.time * 5.1) > 0.995) ? 0.18 : 1;
-      light.intensity = fixture.strength * flicker * (this.powered ? 1.2 : 1);
+      const occlusion = clearSight(this.map, camera.x, camera.z, fixture.position.x, fixture.position.z) ? 1 : .2;
+      light.intensity = fixture.strength * flicker * (this.powered ? 1.15 : 1) * this.lightLevel * occlusion;
     });
   }
 
@@ -959,7 +977,15 @@ export class BackroomsGame {
       moving = this.updatePlayer(dt);
     }
     if (this.coop && this.state !== 'menu') this.updateCoop(dt);
-    if (this.state === 'menu' || this.state === 'playing' || this.needsRender || (this.coop && this.state === 'paused')) {
+    this.updateFlashlight(dt);
+    if (this.state === 'playing' || (this.coop && this.state === 'paused')) {
+      const tension = this.tension.tick(this.elapsed, this.fuses, this.powered);
+      this.lightLevel = tension.light;
+      if (tension.event) this.audio.atmosphere(tension.event, tension.pan);
+    }
+    const animateMenu = this.state === 'menu' && this.menuAnimated && this.time - this.lastBackgroundRender > 1 / 24;
+    if (animateMenu || this.state === 'playing' || this.needsRender || (this.coop && this.state === 'paused')) {
+      if (this.state === 'menu') this.lastBackgroundRender = this.time;
       this.dust.position.y = Math.sin(this.time * 0.08) * 0.035;
       this.updateLights();
       this.film.uniforms.time.value = this.time;
@@ -980,8 +1006,8 @@ export class BackroomsGame {
         danger: this.danger,
         interaction: this.target ? {
           type: this.target.type,
-          label: this.target.type === 'fuse' ? 'КЕРАМИЧЕСКИЙ ПРЕДОХРАНИТЕЛЬ' : this.target.type === 'panel' ? 'ЭЛЕКТРИЧЕСКИЙ ЩИТОК' : 'АВАРИЙНЫЙ ВЫХОД',
-          action: this.target.type === 'fuse' ? 'Забрать' : this.target.type === 'panel' ? this.powered ? 'Проверить' : 'Восстановить питание' : this.powered ? 'Открыть дверь' : 'Проверить дверь',
+          label: this.target.type === 'note' ? 'ПОЛЕВАЯ ЗАПИСЬ ИССЛЕДОВАТЕЛЯ' : this.target.type === 'fuse' ? 'КЕРАМИЧЕСКИЙ ПРЕДОХРАНИТЕЛЬ' : this.target.type === 'panel' ? 'ЭЛЕКТРИЧЕСКИЙ ЩИТОК' : 'АВАРИЙНЫЙ ВЫХОД',
+          action: this.target.type === 'note' ? 'Прочитать и настроить ориентир' : this.target.type === 'fuse' ? 'Забрать' : this.target.type === 'panel' ? this.powered ? 'Проверить' : 'Восстановить питание' : this.powered ? 'Открыть дверь' : 'Проверить дверь',
         } : null,
         hint: this.getHint(),
       });
@@ -992,7 +1018,9 @@ export class BackroomsGame {
   dispose() {
     cancelAnimationFrame(this.animationId);
     this.resizeObserver.disconnect();
-    this.composer.dispose();
-    this.renderer.dispose();
+    this.mimicVisual.dispose();
+    for (const remote of this.remoteVisuals.values()) remote.visual.dispose();
+    this.remoteVisuals.clear(); this.viewArm?.dispose(); this.audio.dispose();
+    this.composer.dispose(); this.renderer.dispose();
   }
 }

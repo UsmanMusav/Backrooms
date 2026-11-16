@@ -3,6 +3,8 @@
 <body style="margin:0;background:#111"><div id="world"></div><script type="module">
 import { BackroomsGame } from '/src/game.ts';
 import { DEFAULT_SETTINGS } from '/src/settings.ts';
+import { loadExplorerAssets } from '/src/avatar.ts';
+await loadExplorerAssets();
 import { CELL, FUSE_CELLS, SPAWN, findPath } from '/src/level.ts';
 const events = [];
 const game = new BackroomsGame(document.querySelector('#world'), { ...DEFAULT_SETTINGS, quality: 'low', muted: true }, {

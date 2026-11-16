@@ -143,7 +143,7 @@ export class CoopUI {
   renderLobby() {
     const room = this.room;
     if (!room) return;
-    this.lobbyShown = true;
+    this.lobbyShown = true; this.ui.game.setMenuAnimation(false);
     $('#radio').hidden = true;
     this.roster = '';
     const ui = this.ui;

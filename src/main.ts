@@ -1,6 +1,8 @@
 import { version as APP_VERSION } from '../package.json';
 import './style.css';
 import './coop.css';
+import './refinement.css';
+import { loadExplorerAssets } from './avatar';
 import { CoopUI } from './coop-ui';
 import './native';
 import { BackroomsGame } from './game';
@@ -74,7 +76,6 @@ let game: BackroomsGame;
 let coopUI: CoopUI;
 let toastTimeout = 0;
 let introTimeout = 0;
-let menuStarted = Date.now();
 
 function formatTime(seconds: number) {
   const s = Math.floor(seconds);
@@ -82,47 +83,22 @@ function formatTime(seconds: number) {
 }
 
 function menuMarkup() {
-  return `<section class="menu" aria-label="Главное меню">
-    <header class="menu-header">
-      <button class="brand" id="brand-button" aria-label="О проекте NOCLIP">${icon('logo', 'brand-symbol')}<span class="brand-text"><strong>NOCLIP</strong><small>INTERACTIVE ARCHIVE</small></span></button>
-      <div class="archive-id">MIMIC PROTOCOL <span>／</span> ЗАПИСЬ ${APP_VERSION}</div>
-      <button class="sound-button ${settings.muted ? 'is-muted' : ''}" id="sound-button" aria-label="${settings.muted ? 'Включить' : 'Выключить'} звук">${icon(settings.muted ? 'mute' : 'sound')}<span>ЗВУК ${settings.muted ? 'ВЫКЛ.' : 'ВКЛ.'}</span><i class="sound-status"></i></button>
-    </header>
-    <div class="menu-content">
-      <div class="eyebrow">ПСИХОЛОГИЧЕСКИЙ ХОРРОР ОТ ПЕРВОГО ЛИЦА</div>
-      <h1 class="main-title"><span>BACK</span><span>ROOMS</span></h1>
-      <p class="title-caption">ПОТЕРЯННЫЙ СИГНАЛ</p>
-      <p class="menu-description">Вы здесь уже были.<br>Но никогда не заходили так далеко.</p>
-      <div class="menu-actions">
-        <button class="primary-button" id="start-button"><span class="button-copy">${icon('play', 'play-icon')}ВОЙТИ В ЗАКУЛИСЬЕ</span>${icon('arrow')}</button>
-        <button class="coop-menu-button" id="coop-button"><span>${icon('people')}КООПЕРАТИВ</span><small>1—4 ИГРОКА</small></button>
-        <div class="secondary-actions"><button class="text-button" id="settings-button">${icon('sliders')}НАСТРОЙКИ</button><span class="action-divider"></span><button class="text-button" id="controls-button">${icon('help')}КАК ИГРАТЬ</button></div>
-      </div>
-      <p class="content-note">${icon('warning')}СОДЕРЖИТ ВСПЫШКИ СВЕТА И ГРОМКИЕ ЗВУКИ · 16+</p>
+  return `<section class="menu menu-clean" aria-label="Главное меню">
+    <header class="clean-header"><span>ПОТЕРЯННЫЙ СИГНАЛ</span><button class="sound-button ${settings.muted ? 'is-muted' : ''}" id="sound-button" aria-label="${settings.muted ? 'Включить' : 'Выключить'} звук">${icon(settings.muted ? 'mute' : 'sound')}<span>ЗВУК ${settings.muted ? 'ВЫКЛ.' : 'ВКЛ.'}</span></button></header>
+    <div class="clean-content"><p class="clean-kicker">MIMIC</p><h1 class="clean-title">BACKROOMS</h1><p class="clean-description">Не каждый, кто идёт рядом, — человек.</p>
+      <nav class="clean-actions" aria-label="Режим игры"><button class="primary-button" id="start-button"><span>ВОЙТИ В ЗАКУЛИСЬЕ</span>${icon('arrow')}</button><button class="clean-coop" id="coop-button"><span>КООПЕРАТИВ</span><small>1–4 игрока</small></button></nav>
+      <div class="clean-secondary"><button id="settings-button">НАСТРОЙКИ</button><button id="controls-button">КАК ИГРАТЬ</button></div>
     </div>
-    <div class="scene-frame" aria-hidden="true"><i class="frame-corner tl"></i><i class="frame-corner tr"></i><i class="frame-corner bl"></i><i class="frame-corner br"></i><div class="record-label"><span class="record-dot"></span>REC · CAM_01</div><div class="record-time" id="menu-time">00:00:00:00</div></div>
-    <div class="scene-annotation"><div class="annotation-line"></div><div class="annotation-copy"><small>НОВАЯ УГРОЗА / MIMIC</small><p>Он выглядит как ваш друг.<br>Пока вы ему верите.</p><div class="coordinates">36° 08′ 52.1″ N &nbsp; / &nbsp; −−° −−′ −−.−″ E</div></div></div>
-    <div class="edge-caption">YOU HAVE BEEN HERE BEFORE // TAPE_001</div>
-    <footer class="menu-footer">
-      <div class="footer-top"><div class="control-preview">
-        <div class="control-hint desktop-hint"><span class="key-group"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span><span>ПЕРЕМЕЩЕНИЕ</span></div>
-        <div class="control-hint desktop-hint">${icon('mouse')}<span>ОСМОТР</span></div>
-        <div class="control-hint headphones">${icon('headphones')}<span>РЕКОМЕНДУЕМ НАУШНИКИ</span></div>
-      </div><div class="experience-tag"><span class="level-badge">0</span><span class="tag-stack"><span>ВЫХОД НЕ ГАРАНТИРОВАН</span><span>СОЛО / КООПЕРАТИВ 1–4 ИГРОКА</span></span></div></div>
-      <div class="footer-bottom"><span>© 2026 NOCLIP PROJECT &nbsp;／&nbsp; <button class="about-link" id="about-button">ОБ ИГРЕ</button></span><span class="footer-build">PS3-ERA AESTHETIC &nbsp; BUILD ${APP_VERSION}</span></div>
-    </footer>
+    <footer class="clean-footer"><span>${icon('headphones')}Лучше в наушниках</span><small>v${APP_VERSION} · Содержит мерцание</small></footer>
   </section>`;
 }
 
 function renderMenu() {
-  menuStarted = Date.now();
   screen.innerHTML = menuMarkup();
   $('#start-button').addEventListener('click', beginGame);
   $('#coop-button').addEventListener('click', () => coopUI.showConnect());
   $('#settings-button').addEventListener('click', showSettings);
   $('#controls-button').addEventListener('click', showControls);
-  $('#brand-button').addEventListener('click', showAbout);
-  $('#about-button').addEventListener('click', showAbout);
   $('#sound-button').addEventListener('click', toggleSound);
 }
 
@@ -213,16 +189,17 @@ function notify(text: string, title = 'ЗАПИСЬ 001') {
   $('#notification-title').textContent = title;
   $('#notification-text').textContent = text;
   $('#notification').classList.add('visible');
-  toastTimeout = window.setTimeout(() => $('#notification').classList.remove('visible'), 6500);
+  toastTimeout = window.setTimeout(() => $('#notification').classList.remove('visible'), title.startsWith('ЗАПИСЬ 0') ? 11000 : 6500);
 }
 
 function openModal(title: string, content: string, overline = 'NOCLIP / ПАРАМЕТРЫ ЗАПИСИ') {
-  game.audio.click();
+  game.audio.click(); game.setMenuAnimation(false);
   dialog.innerHTML = `<div class="dialog-inner"><div class="dialog-header"><div><div class="dialog-overline">${overline}</div><h2 class="dialog-title" id="dialog-title">${title}</h2></div><button class="dialog-close" id="dialog-close" aria-label="Закрыть">${icon('close')}</button></div>${content}</div>`;
   $('#dialog-close').addEventListener('click', closeModal);
   if (!dialog.open) dialog.showModal();
 }
-function closeModal() { if (dialog.open) dialog.close(); }
+function closeModal() { if (dialog.open) dialog.close(); if (game?.state === 'menu' && !coopUI?.room) game.setMenuAnimation(true); }
+dialog.addEventListener('close', () => { if (game?.state === 'menu' && !coopUI?.room) game.setMenuAnimation(true); });
 dialog.addEventListener('click', event => {
   const rect = dialog.getBoundingClientRect();
   if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeModal();
@@ -255,7 +232,7 @@ function showSettings() {
     <div class="settings-row"><label class="setting-label" for="sensitivity-input"><span>Чувствительность мыши</span><output class="setting-value" id="sensitivity-output">${Math.round(settings.sensitivity * 100)}%</output></label><input class="range-input" id="sensitivity-input" type="range" min="10" max="100" value="${settings.sensitivity * 100}"/></div>
     <div class="settings-row"><div class="setting-label">Качество изображения</div><div class="quality-options" role="group" aria-label="Качество изображения">${[['low', 'НИЗКОЕ'], ['medium', 'СРЕДНЕЕ'], ['high', 'ВЫСОКОЕ']].map(([value, label]) => `<button class="quality-option ${settings.quality === value ? 'active' : ''}" data-quality="${value}" aria-pressed="${settings.quality === value}">${label}</button>`).join('')}</div></div>
     <div class="settings-row toggle-row"><div><span class="toggle-title">Плёночное зерно</span><p>Аналоговый шум в духе хорроров эпохи PS3.</p></div><label class="toggle"><input type="checkbox" id="grain-input" aria-label="Плёночное зерно" ${settings.grain ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
-    <div class="settings-row toggle-row"><div><span class="toggle-title">Покачивание камеры</span><p>Отключите, если испытываете дискомфорт.</p></div><label class="toggle"><input type="checkbox" id="bob-input" aria-label="Покачивание камеры" ${settings.headBob ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
+    <div class="settings-row toggle-row"><div><span class="toggle-title">Покачивание камеры</span><p>Плавный шаг, наклон и инерция рук. Отключите при дискомфорте.</p></div><label class="toggle"><input type="checkbox" id="bob-input" aria-label="Покачивание камеры" ${settings.headBob ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
     <div class="dialog-footer"><button class="reset-settings" id="reset-settings">Сбросить настройки</button><button class="primary-button" id="settings-done"><span>ГОТОВО</span>${icon('check')}</button></div>
   `);
   $('#volume-input').addEventListener('input', event => {
@@ -304,15 +281,6 @@ function showControls() {
   $('#controls-done').addEventListener('click', closeModal);
 }
 
-function showAbout() {
-  openModal('НАЙДЕННАЯ ЗАПИСЬ', `
-    <div class="about-title">BACKROOMS</div>
-    <p class="about-copy">Иногда достаточно одного неверного шага, чтобы выпасть из реальности. Вы оказываетесь в бесконечном лабиринте пустых офисов. Мокрый ковролин. Пожелтевшие обои. Гул ламп, от которого болит голова.</p>
-    <p class="about-copy">Хоррор для одного или команды до четырёх игроков. Mimic копирует напарника, его движения, внешний вид и сообщения в рации. Вдохновлён легендой о Backrooms и визуальным языком игр эпохи PlayStation 3. Вся графика и звук создаются в реальном времени.</p>
-    <div class="control-warning">${icon('warning')}<p>Игра содержит мерцание света, напряжённые звуки и преследование. Настройки плёночного зерна и движения камеры можно изменить в меню.</p></div>
-    <div class="about-meta"><span>NOCLIP PROJECT / 2026</span><span>WEBGL · BUILD ${APP_VERSION}</span></div>
-  `, 'NOCLIP / ОБ ЭКСПЕРИМЕНТЕ');
-}
 
 function showExitConfirmation() {
   openModal('ПОКИНУТЬ ЗАПИСЬ?', '<p class="confirm-message">' + (game.coop ? 'Вы отключитесь от комнаты. Оставшиеся игроки продолжат экспедицию; роль ведущего будет передана автоматически.' : 'Текущий прогресс не сохраняется. Когда вы вернётесь, лабиринт начнётся сначала.') + '</p><div class="dialog-footer"><button class="reset-settings" id="stay-button">Остаться</button><button class="primary-button" id="leave-button"><span>ВЫЙТИ В МЕНЮ</span>' + icon('arrow') + '</button></div>', 'NOCLIP / ЗАВЕРШЕНИЕ СЕАНСА');
@@ -380,7 +348,10 @@ window.addEventListener('keydown', event => {
 });
 
 renderMenu();
+async function initialize() {
+let assetsReady = false;
 try {
+  await loadExplorerAssets(); assetsReady = true;
   game = new BackroomsGame($('#world'), settings, { onState, onUpdate, onMessage: notify });
   coopUI = new CoopUI({ game, screen, icon, openModal, closeModal, notify, refreshEnd: renderState });
   bindTouchControls();
@@ -390,11 +361,9 @@ try {
   }, 700);
 } catch (error) {
   console.error('Unable to initialize the game:', error);
-  app.innerHTML = `<div class="webgl-error"><div><div class="eyebrow">СИГНАЛ НЕ ОБНАРУЖЕН</div><h1>НУЖЕН WEBGL 2</h1><p>Ваш браузер не смог запустить трёхмерную сцену. Включите аппаратное ускорение или откройте игру в актуальной версии Chrome, Edge, Firefox или Safari.</p><button class="primary-button" id="reload-button">ПОПРОБОВАТЬ СНОВА ${icon('arrow')}</button></div></div>`;
+  app.innerHTML = `<div class="webgl-error"><div><div class="eyebrow">СИГНАЛ НЕ ОБНАРУЖЕН</div><h1>${assetsReady ? 'НУЖЕН WEBGL 2' : 'МОДЕЛЬ НЕ ЗАГРУЖЕНА'}</h1><p>${assetsReady ? 'Включите аппаратное ускорение или откройте игру в актуальном браузере.' : 'Не удалось прочитать локальные файлы персонажа. Перезагрузите страницу или проверьте целостность сборки.'}</p><button class="primary-button" id="reload-button">ПОПРОБОВАТЬ СНОВА ${icon('arrow')}</button></div></div>`;
   $('#reload-button').addEventListener('click', () => location.reload());
 }
 
-window.setInterval(() => {
-  const counter = document.querySelector('#menu-time');
-  if (counter) counter.textContent = formatTime((Date.now() - menuStarted) / 1000) + ':00';
-}, 1000);
+}
+void initialize();

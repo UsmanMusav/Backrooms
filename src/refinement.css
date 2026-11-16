@@ -1,0 +1,41 @@
+/* Minimal front-end: no fake recording telemetry, feature cards, or duplicated labels. */
+.menu.menu-clean { display: flex; flex-direction: column; justify-content: space-between; padding: 34px 5.8vw 27px; background: linear-gradient(90deg, rgba(11,15,11,.88) 0%, rgba(13,18,12,.62) 40%, rgba(13,18,12,.10) 78%); }
+.clean-header { display: flex; align-items: center; justify-content: space-between; color: #acb39b; font-family: var(--mono); font-size: 10px; letter-spacing: 2.5px; }
+.clean-header .sound-button { background: rgba(16,23,15,.34); padding: 11px 13px; }
+.clean-content { width: min(540px, 100%); margin: 55px 0 70px; }
+.clean-kicker { margin: 0 0 4px; font-family: var(--mono); font-size: 12px; color: #b4bc9d; letter-spacing: .6em; }
+.clean-title { font: 500 clamp(64px, 8.5vw, 112px)/1.13 var(--display); letter-spacing: -.025em; margin: 0 0 19px; color: #e4e7ce; text-shadow: 0 4px 45px rgba(12,20,11,.6); }
+.clean-description { font-size: 13px; color: #b2b6a3; margin: 0 0 42px; }
+.clean-actions { width: min(360px, 100%); display: flex; flex-direction: column; gap: 10px; }
+.clean-actions .primary-button { min-height: 57px; width: 100%; padding: 0 23px; font-size: 11px; letter-spacing: 1.4px; }
+.clean-coop { background: rgba(23,32,22,.6); border: 1px solid rgba(194,207,164,.24); padding: 18px 22px; display: flex; align-items: center; justify-content: space-between; text-align: left; font-size: 10px; letter-spacing: 1.6px; transition: border-color .2s, background .2s; }
+.clean-coop:hover { background: rgba(105,118,78,.25); border-color: rgba(198,213,165,.65); }
+.clean-coop small { font: 9px var(--mono); color: #a2ab92; letter-spacing: 0; }
+.clean-secondary { display: flex; gap: 27px; margin-top: 25px; }
+.clean-secondary button { background: none; padding: 8px 0; color: #a8b09a; font-size: 9px; font-weight: 600; letter-spacing: 1.3px; }
+.clean-secondary button:hover { color: #e4e7ce; }
+.clean-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #8c9580; }
+.clean-footer > span { display: flex; align-items: center; gap: 10px; font-size: 10px; }
+.clean-footer .icon { width: 15px; height: 15px; }
+.clean-footer small { font: 9px var(--mono); color: #7f8975; }
+@media (max-width: 650px) {
+  .menu.menu-clean { padding: max(24px, env(safe-area-inset-top)) 27px max(24px, env(safe-area-inset-bottom)); background: linear-gradient(90deg, rgba(11,15,11,.9), rgba(13,18,12,.56)); }
+  .clean-header { font-size: 8px; letter-spacing: 1.5px; }
+  .clean-header .sound-button span { display: none; }
+  .clean-content { margin: 25px 0 45px; }
+  .clean-title { font-size: clamp(53px, 15vw, 86px); }
+  .clean-description { font-size: 11px; max-width: 280px; line-height: 1.8; margin-bottom: 30px; }
+  .clean-footer { align-items: flex-start; flex-direction: column; gap: 11px; }
+}
+@media (max-height: 570px) {
+  .menu.menu-clean { padding-top: 15px; padding-bottom: 13px; }
+  .clean-content { margin: 14px 0; }
+  .clean-title { font-size: 59px; margin-bottom: 10px; }
+  .clean-description { margin-bottom: 19px; }
+  .clean-kicker { font-size: 9px; }
+  .clean-actions { gap: 7px; }
+  .clean-actions .primary-button { min-height: 43px; }
+  .clean-coop { padding: 13px 22px; }
+  .clean-secondary { margin-top: 10px; }
+  .clean-footer > span { font-size: 9px; }
+}

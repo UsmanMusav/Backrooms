@@ -166,3 +166,39 @@ export function stainTexture() {
   }
   return texture(element);
 }
+
+/** Linear-data normal + roughness maps from the existing deterministic artwork. */
+export function surfaceMaps(albedo: THREE.CanvasTexture, depth = 1, rough = .9) {
+  const image = albedo.image as HTMLCanvasElement;
+  const width = image.width, height = image.height;
+  const data = image.getContext('2d')!.getImageData(0, 0, width, height).data;
+  const n = canvas(width, height), r = canvas(width, height);
+  const normals = n.ctx.createImageData(width, height), roughness = r.ctx.createImageData(width, height);
+  const sample = (x: number, y: number) => {
+    const i = (((y + height) % height) * width + (x + width) % width) * 4;
+    return (data[i] + data[i + 1] + data[i + 2]) / 765;
+  };
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const i = (y * width + x) * 4;
+    const dx = (sample(x - 1, y) - sample(x + 1, y)) * depth;
+    const dy = (sample(x, y + 1) - sample(x, y - 1)) * depth;
+    const length = Math.hypot(dx, dy, 1);
+    normals.data[i] = (dx / length * .5 + .5) * 255;
+    normals.data[i + 1] = (dy / length * .5 + .5) * 255;
+    normals.data[i + 2] = (1 / length * .5 + .5) * 255; normals.data[i + 3] = 255;
+    const value = Math.min(255, Math.max(0, (rough + (sample(x, y) - .45) * .1) * 255));
+    roughness.data[i] = roughness.data[i + 1] = roughness.data[i + 2] = value; roughness.data[i + 3] = 255;
+  }
+  n.ctx.putImageData(normals, 0, 0); r.ctx.putImageData(roughness, 0, 0);
+  const normalMap = new THREE.CanvasTexture(n.element), roughnessMap = new THREE.CanvasTexture(r.element);
+  for (const map of [normalMap, roughnessMap]) { map.wrapS = map.wrapT = THREE.RepeatWrapping; map.repeat.copy(albedo.repeat); map.anisotropy = 8; }
+  return { normalMap, roughnessMap };
+}
+
+export function cardboardTexture() {
+  const { element, ctx } = canvas(256, 256), random = seededRandom(561);
+  ctx.fillStyle = '#a5956a'; ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 6000; i++) { ctx.fillStyle = random() > .5 ? 'rgba(44,43,25,.09)' : 'rgba(231,219,172,.11)'; ctx.fillRect(random() * 256, random() * 256, 1, .5 + random() * 3); }
+  for (const y of [1, 254]) { ctx.fillStyle = '#6e6b4c'; ctx.fillRect(0, y, 256, 1); }
+  return texture(element);
+}

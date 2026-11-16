@@ -22,6 +22,16 @@ async function boot() {
     const html = await response.text();
     const health = await fetch(`http://127.0.0.1:${port}/api/health`).then(r => r.json());
     if (!html.includes('BACKROOMS') || !health.ok) throw new Error('Embedded client/server smoke test failed');
+    const model = await fetch(`http://127.0.0.1:${port}/models/explorer.glb`);
+    const modelBytes = Buffer.from(await model.arrayBuffer());
+    if (model.headers.get('content-type') !== 'model/gltf-binary' || modelBytes.toString('ascii', 0, 4) !== 'glTF') throw new Error('Embedded animated explorer is missing');
+    const modelJSON = JSON.parse(modelBytes.toString('utf8', 20, 20 + modelBytes.readUInt32LE(12)));
+    if (modelJSON.animations?.length !== 8 || modelJSON.skins?.[0]?.joints?.length !== 65) throw new Error('Explorer skeleton/animation bundle is invalid');
+    for (const name of ['explorer-albedo.jpg', 'explorer-normal.jpg', 'explorer-roughness.png', 'explorer-eyes.jpg', 'CC0-1.0.txt', 'Quaternius-Standard-License.txt']) {
+      const resource = await fetch(`http://127.0.0.1:${port}/models/${name}`);
+      if (!resource.ok || (await resource.arrayBuffer()).byteLength < 500) throw new Error(`Missing local model dependency: ${name}`);
+    }
+    if (!asset('THIRD_PARTY_NOTICES.txt').toString('utf8').includes('Quaternius')) throw new Error('Character attribution is missing');
     const { WebSocket } = require('ws');
     const code = await new Promise((resolveRoom, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, 'backrooms-v1');
@@ -31,7 +41,7 @@ async function boot() {
       setTimeout(() => { ws.terminate(); reject(new Error('Embedded WebSocket smoke test timed out')); }, 5000).unref();
     });
     await testServer.close();
-    console.log(JSON.stringify({ ok: true, protocol: health.protocol, assets: assets.size, room: code, node: process.versions.node }));
+    console.log(JSON.stringify({ ok: true, protocol: health.protocol, assets: assets.size, characterClips: modelJSON.animations.length, room: code, node: process.versions.node }));
     process.exit(0);
   }
   if (isSea()) {

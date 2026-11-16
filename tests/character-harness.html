@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="UTF-8"><title>Character animation test harness</title></head>
+<body style="margin:0;background:#20251f"><script type="module">
+import * as THREE from 'three';
+import { ExplorerAvatar, loadExplorerAssets } from '/src/avatar.ts';
+await loadExplorerAssets();
+const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
+renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(1);renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.5;
+document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x242a23);
+scene.add(new THREE.HemisphereLight(0xe7ead4,0x4f503d,2.2));const light=new THREE.DirectionalLight(0xfff4d1,3);light.position.set(2,5,4);scene.add(light);
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(30,30),new THREE.MeshStandardMaterial({color:0x444e3b,roughness:1}));floor.rotation.x=-Math.PI/2;scene.add(floor);
+const camera=new THREE.PerspectiveCamera(37,innerWidth/innerHeight,.03,40);camera.position.set(1.2,1.65,6.3);camera.lookAt(0,1,0);
+const actors=[0,1,2].map(i=>({id:`person-${i}`,name:i===2?'MIMIC':'Исследователь',skin:i,alive:true,x:(i-1)*1.5,z:0,yaw:Math.PI,pitch:0,flashlight:i!==1,moving:i===1,sprint:false,revealed:i===2}));
+const avatars=actors.map(a=>{const avatar=new ExplorerAvatar();scene.add(avatar.group);return avatar;});
+let time=0,last=0;function frame(t){const dt=Math.min(.04,(t-(last||t))/1000);last=t;time+=dt;avatars.forEach((a,i)=>a.update(actors[i],dt,time,true));renderer.render(scene,camera);requestAnimationFrame(frame);}requestAnimationFrame(frame);
+window.characterHarness={avatars,actors,scene,camera,renderer,THREE};
+</script></body></html>

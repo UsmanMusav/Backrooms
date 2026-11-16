@@ -12,6 +12,10 @@ export class MimicBrain {
   phase: 'masked' | 'revealed' = 'masked';
   trust = 0;
   age = 0;
+  searching = false;
+  private memory = 0;
+  private lastKnown?: Cell;
+  private searchGoal?: Cell;
   private targetId = '';
   private route: Cell[] = [];
   private planTimer = 0;
@@ -63,7 +67,7 @@ export class MimicBrain {
       this.targetId = target?.id ?? '';
       this.trust = 0;
       this.route = [];
-      this.planTimer = 0;
+      this.planTimer = 0; this.lastKnown = undefined; this.searchGoal = undefined; this.memory = 0;
     }
     if (!target) { this.actor.moving = false; return result; }
     dt = clamp(dt, 0, 0.1);
@@ -89,10 +93,21 @@ export class MimicBrain {
         this.actor.flashlight = false;
         this.route = [];
         this.planTimer = 0;
+        this.lastKnown = cellAt(target.x, target.z); this.memory = 3.8;
         result.revealedNow = true;
       }
     }
 
+    if (this.phase === 'revealed') {
+      // No omniscient wall tracking: a player can escape by breaking sight and keeping quiet.
+      const sees = sight && d < 25 && (target.flashlight || target.moving || d < 8);
+      const hears = target.moving && d < (target.sprint ? 16 : 5.5);
+      if (sees || hears) {
+        if (this.searching) { this.planTimer = 0; this.route = []; }
+        this.lastKnown = cellAt(target.x, target.z); this.memory = 3.8; this.searchGoal = undefined;
+      } else this.memory = Math.max(0, this.memory - dt);
+      this.searching = this.memory <= 0;
+    }
     this.planTimer -= dt;
     this.nextPause -= dt;
     this.pauseTimer -= dt;
@@ -109,8 +124,19 @@ export class MimicBrain {
     }
 
     if (this.planTimer <= 0) {
-      this.planTimer = this.phase === 'revealed' ? 0.55 : 1.4 + this.random();
-      let goal = cellAt(target.x, target.z);
+      this.planTimer = this.phase === 'revealed' ? this.searching ? 1.7 : .55 : 1.4 + this.random();
+      let goal = this.phase === 'revealed' ? this.lastKnown ?? cellAt(this.actor.x, this.actor.z) : cellAt(target.x, target.z);
+      if (this.phase === 'revealed' && this.searching) {
+        if (!this.searchGoal || distance(this.actor, { x: this.searchGoal.x * CELL, z: this.searchGoal.z * CELL }) < .6) {
+          const options: Cell[] = [];
+          for (let dz = -3; dz <= 3; dz++) for (let dx = -3; dx <= 3; dx++) {
+            const cell = { x: goal.x + dx, z: goal.z + dz };
+            if (this.map[cell.z]?.[cell.x] === false) options.push(cell);
+          }
+          this.searchGoal = options[Math.floor(this.random() * options.length)] ?? goal;
+        }
+        goal = this.searchGoal;
+      }
       this.mode = 'follow';
       if (this.phase === 'masked' && sight && d < 6) {
         const objectives = FUSE_CELLS.filter((_cell, i) => !takenFuses[i]);
@@ -133,7 +159,7 @@ export class MimicBrain {
       const dx = next.x * CELL - this.actor.x;
       const dz = next.z * CELL - this.actor.z;
       const length = Math.hypot(dx, dz);
-      const gait = this.phase === 'revealed' ? 3.05 : clamp(this.learnedSpeed, 1.7, 3.6);
+      const gait = this.phase === 'revealed' ? this.searching ? 1.65 : 3.05 : clamp(this.learnedSpeed, 1.7, 3.6);
       const step = Math.min(length, gait * dt);
       if (length < 0.04) this.route.shift();
       else {
@@ -148,7 +174,11 @@ export class MimicBrain {
     }
     this.actor.moving = distance(before, this.actor) > 0.0005;
     if (!this.actor.moving || (this.phase === 'masked' && this.pauseTimer > 0)) {
-      this.actor.yaw = Math.atan2(target.x - this.actor.x, target.z - this.actor.z) + Math.PI + Math.sin(this.age * 0.7) * 0.18;
+      if (this.phase === 'revealed' && this.searching) this.actor.yaw += dt * .8;
+      else {
+        const look = this.phase === 'revealed' && this.lastKnown ? { x: this.lastKnown.x * CELL, z: this.lastKnown.z * CELL } : target;
+        this.actor.yaw = Math.atan2(look.x - this.actor.x, look.z - this.actor.z) + Math.PI + Math.sin(this.age * .7) * .18;
+      }
       this.actor.pitch = Math.sin(this.age * 0.55) * 0.12;
     }
     if (this.phase === 'revealed' && d < 0.82 && sight) result.victim = target.id;

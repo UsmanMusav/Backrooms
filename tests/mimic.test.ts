@@ -83,3 +83,27 @@ test('Mimic only hears explicitly supplied public game chat and emits ordinary s
   assert.ok(speech.length >= 1);
   assert.ok(speech.every(line => line.length > 1 && line.length < 90));
 });
+
+test('revealed Mimic loses a silent hidden target but hears nearby running through a wall', () => {
+  const human = player(), brain = new MimicBrain(map, [human], 'opaque', 165);
+  brain.phase = 'revealed'; brain.actor.revealed = true; brain.actor.flashlight = false;
+  brain.actor.x = 4 * CELL; brain.actor.z = 4 * CELL;
+  human.x = 23 * CELL; human.z = 20 * CELL; human.flashlight = false;
+  for (let i = 0; i < 120; i++) brain.tick(.05, [human], [false, false, false]);
+  assert.equal(brain.searching, true);
+  assert.ok(Math.hypot(brain.actor.x - human.x, brain.actor.z - human.z) > 25);
+  // The pillar at x=6 blocks sight between x=4 and x=8.
+  brain.actor.x = 4 * CELL; brain.actor.z = 4 * CELL;
+  human.x = 8 * CELL; human.z = 4 * CELL; human.moving = true; human.sprint = false;
+  brain.tick(.05, [human], [false, false, false]); assert.equal(brain.searching, true);
+  human.sprint = true; brain.tick(.05, [human], [false, false, false]); assert.equal(brain.searching, false);
+});
+
+test('flashlight in a visible corridor allows revealed Mimic to reacquire a hiding player', () => {
+  const human = player(), brain = new MimicBrain(map, [human], 'opaque', 165);
+  brain.phase = 'revealed'; brain.actor.revealed = true;
+  brain.actor.x = 4 * CELL; brain.actor.z = 4 * CELL;
+  human.z = 8 * CELL; human.flashlight = false;
+  brain.tick(.05, [human], [false, false, false]); assert.equal(brain.searching, true);
+  human.flashlight = true; brain.tick(.05, [human], [false, false, false]); assert.equal(brain.searching, false);
+});

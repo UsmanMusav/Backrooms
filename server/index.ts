@@ -10,7 +10,7 @@ import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
 
 type Socket = WebSocket & { room?: string; playerId: string; alive: boolean; count: number; rateAt: number };
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.png': 'image/png', '.json': 'application/json' };
+const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.png': 'image/png', '.json': 'application/json', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary', '.txt': 'text/plain; charset=utf-8' };
 export const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:; object-src 'none'; base-uri 'self'";
 
 export function createGameServer(options: { server?: Server; distDir?: string; assets?: Map<string, Buffer> } = {}) {

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createConnection } from 'node:net';
+import { readFileSync } from 'node:fs';
 import { WebSocket } from 'ws';
 import { createGameServer } from '../server/index.ts';
 import { PROTOCOL } from '../shared/protocol.ts';
@@ -123,5 +124,23 @@ test('malformed and unknown upgrade targets close safely', async () => {
       await closed;
     }
     assert.equal((await fetch(`http://127.0.0.1:${port}/api/health`)).status, 200);
+  } finally { await server.close(); }
+});
+
+
+test('embedded server serves real local GLB, suit textures and licenses with nosniff-safe MIME types', async () => {
+  const assets = new Map([['index.html', Buffer.from('<title>BACKROOMS</title>')]]);
+  for (const file of ['explorer.glb', 'explorer-albedo.jpg', 'CC0-1.0.txt']) assets.set('models/' + file, readFileSync(new URL('../public/models/' + file, import.meta.url)));
+  const server = createGameServer({ assets }), port = await server.listen(0, '127.0.0.1');
+  try {
+    const model = await fetch(`http://127.0.0.1:${port}/models/explorer.glb`);
+    assert.equal(model.headers.get('content-type'), 'model/gltf-binary');
+    assert.equal(model.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(Buffer.from(await model.arrayBuffer()).toString('ascii', 0, 4), 'glTF');
+    const image = await fetch(`http://127.0.0.1:${port}/models/explorer-albedo.jpg`);
+    assert.equal(image.headers.get('content-type'), 'image/jpeg'); assert.equal(new Uint8Array(await image.arrayBuffer())[0], 255);
+    const license = await fetch(`http://127.0.0.1:${port}/models/CC0-1.0.txt`);
+    assert.match(license.headers.get('content-type')!, /^text\/plain/); assert.match(await license.text(), /CC0 1.0/);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/models/explorer.glb`, { method: 'HEAD' }).then(r => r.arrayBuffer())).byteLength, 0);
   } finally { await server.close(); }
 });
