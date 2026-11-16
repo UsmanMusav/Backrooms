@@ -1,0 +1,122 @@
+import { test, expect } from '@playwright/test';
+
+test('Russian menus, settings persistence, keyboard controls, pause and return', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('backrooms-settings')) localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true }));
+  });
+  await page.goto('/');
+  await expect(page.locator('#boot')).toHaveCount(0);
+  await expect(page).toHaveTitle('BACKROOMS — Потерянный сигнал');
+  await page.getByRole('button', { name: 'КАК ИГРАТЬ', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByRole('dialog')).toContainText('3 предохранителя');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  await page.getByRole('button', { name: 'НАСТРОЙКИ', exact: true }).click();
+  await page.locator('#grain-input').uncheck();
+  await page.locator('#bob-input').uncheck();
+  await page.getByRole('button', { name: 'ГОТОВО', exact: true }).click();
+  await page.reload();
+  await expect(page.locator('#boot')).toHaveCount(0);
+  await page.getByRole('button', { name: 'НАСТРОЙКИ', exact: true }).click();
+  await expect(page.locator('#grain-input')).not.toBeChecked();
+  await expect(page.locator('#bob-input')).not.toBeChecked();
+  await page.getByRole('button', { name: 'ГОТОВО', exact: true }).click();
+  await page.getByRole('button', { name: 'ВОЙТИ В ЗАКУЛИСЬЕ', exact: true }).click();
+  await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
+  await expect(page.locator('#hud')).toBeVisible();
+  await expect(page.locator('.chapter-intro')).toHaveCount(0);
+  await page.keyboard.press('f');
+  await expect(page.locator('#flashlight-text')).toHaveText('ФОНАРЬ ВЫКЛ.');
+  await page.keyboard.press('h');
+  await expect(page.locator('#waypoint')).toBeVisible();
+  await page.keyboard.press('p');
+  await expect(page.locator('body')).toHaveAttribute('data-state', 'paused');
+  await page.getByRole('button', { name: 'ПРОДОЛЖИТЬ ЗАПИСЬ', exact: true }).click();
+  await expect(page.locator('body')).toHaveAttribute('data-state', 'playing');
+  await page.keyboard.press('p');
+  await page.getByRole('button', { name: 'В ГЛАВНОЕ МЕНЮ', exact: true }).click();
+  await page.getByRole('button', { name: 'ВЫЙТИ В МЕНЮ', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'ВОЙТИ В ЗАКУЛИСЬЕ', exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('actual engine: locked exit, interaction range, three fuses, AI, power, win, restart and death', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 400 });
+  await page.goto('/tests/browser-harness.html');
+  await page.waitForFunction(() => 'harness' in window);
+  await page.locator('canvas').click({ position: { x: 300, y: 200 } });
+  const results = await page.evaluate(() => {
+    // The harness exists only in tests, so production has no debug/teleport API.
+    // @ts-expect-error Test-only runtime fixture.
+    const { game: g, CELL } = window.harness;
+    g.start();
+    const initialPitch = g.pitch;
+    const initialState = g.state;
+    const approach = (item: { position: { x: number; y: number; z: number } }) => {
+      g.camera.position.set(item.position.x, 1.63, item.position.z + 1.5);
+      g.yaw = 0;
+      g.pitch = Math.atan2(item.position.y - 1.63, 1.5);
+      g.camera.rotation.set(g.pitch, 0, 0, 'YXZ');
+      g.camera.updateMatrixWorld(true);
+      g.target = g.findInteraction();
+      if (!g.target) throw new Error('Object cannot be interacted with from its approach position');
+      g.interact();
+    };
+    const exit = g.interactables.find((item: { type: string }) => item.type === 'exit');
+    const panel = g.interactables.find((item: { type: string }) => item.type === 'panel');
+    approach(exit);
+    const lockedExitState = g.state;
+    approach(panel);
+    const initiallyPowered = g.powered;
+    for (const fuse of g.interactables.filter((item: { type: string }) => item.type === 'fuse')) approach(fuse);
+    const fuses = g.fuses;
+    const activeEntity = g.entityActive && g.entity.visible;
+    const entityStart = g.entity.position.clone();
+    for (let i = 0; i < 480; i++) g.updateEntity(1 / 60, false, false);
+    const entityMoved = entityStart.distanceTo(g.entity.position) > 1;
+    approach(panel);
+    const powered = g.powered;
+    approach(exit);
+    const winState = g.state;
+    g.start();
+    const reset = g.fuses === 0 && !g.powered && !g.entityActive && g.stamina === 1;
+    g.keys.add('KeyW');
+    g.keys.add('ShiftLeft');
+    g.yaw = 0;
+    for (let i = 0; i < 240; i++) g.updatePlayer(1 / 60);
+    const staminaDrained = g.stamina < 1;
+    const wallCollision = g.camera.position.z > 1.5 * CELL;
+    g.keys.clear();
+    g.activateEntity();
+    g.mimicBrain.phase = 'revealed';
+    g.mimicBrain.actor.revealed = true;
+    g.mimicBrain.actor.x = g.camera.position.x + 0.2;
+    g.mimicBrain.actor.z = g.camera.position.z;
+    g.updateEntity(1 / 60, false, false);
+    const deathState = g.state;
+    return { initialPitch, initialState, lockedExitState, initiallyPowered, fuses, activeEntity, entityMoved, powered, winState, reset, staminaDrained, wallCollision, deathState };
+  });
+  expect(results).toEqual({ initialPitch: 0, initialState: 'playing', lockedExitState: 'playing', initiallyPowered: false, fuses: 3, activeEntity: true, entityMoved: true, powered: true, winState: 'won', reset: true, staminaDrained: true, wallCollision: true, deathState: 'dead' });
+});
+
+test('mobile layout has no clipped start button and provides working touch controls', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
+  const page = await context.newPage();
+  await page.addInitScript(() => localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true })));
+  await page.goto('/');
+  await expect(page.locator('#boot')).toHaveCount(0);
+  const start = page.getByRole('button', { name: 'ВОЙТИ В ЗАКУЛИСЬЕ', exact: true });
+  const box = await start.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.y + box!.height).toBeLessThan(700);
+  await start.tap();
+  await expect(page.locator('#touch-controls')).toBeVisible();
+  await page.locator('#touch-light').tap();
+  await expect(page.locator('#flashlight-text')).toHaveText('ФОНАРЬ ВЫКЛ.');
+  await page.getByRole('button', { name: 'Пауза', exact: true }).tap();
+  await expect(page.locator('body')).toHaveAttribute('data-state', 'paused');
+  await context.close();
+});

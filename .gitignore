@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.arena/
+.cache/
+.DS_Store
+*.local
+test-results/
+playwright-report/
+
+# Reproducible native staging and downloadable builds
+.desktop/
+artifacts/

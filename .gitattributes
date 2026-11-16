@@ -1,0 +1,11 @@
+* text=auto
+*.ico binary
+*.rgba binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.woff binary
+*.woff2 binary
+
+# Keep third-party license text verbatim, including its original indentation.
+desktop/licenses/** -whitespace

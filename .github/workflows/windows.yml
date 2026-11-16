@@ -1,0 +1,70 @@
+name: Windows build and versioned release
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'shared/**'
+      - 'server/**'
+      - 'desktop/**'
+      - 'scripts/**'
+      - 'public/**'
+      - 'tests/**'
+      - 'index.html'
+      - 'vite.config.ts'
+      - 'tsconfig*.json'
+      - 'package*.json'
+      - 'CHANGELOG.md'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  portable-exe:
+    name: Test and build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:windows
+      - run: npm run verify:windows
+      - run: npm run test:desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Backrooms-Mimic-Windows-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish new version without replacing older releases
+    needs: portable-exe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: backrooms-versioned-releases
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.3'
+      - uses: actions/download-artifact@v4
+        with:
+          name: Backrooms-Mimic-Windows-${{ github.sha }}
+          path: artifacts
+      - name: Publish EXE, checksum, instructions and licenses
+        run: node scripts/publish-release.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}

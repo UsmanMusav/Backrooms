@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="UTF-8"><title>Backrooms engine test harness</title></head>
+<body style="margin:0;background:#111"><div id="world"></div><script type="module">
+import { BackroomsGame } from '/src/game.ts';
+import { DEFAULT_SETTINGS } from '/src/settings.ts';
+import { CELL, FUSE_CELLS, SPAWN, findPath } from '/src/level.ts';
+const events = [];
+const game = new BackroomsGame(document.querySelector('#world'), { ...DEFAULT_SETTINGS, quality: 'low', muted: true }, {
+  onState: state => events.push({ state }),
+  onUpdate: snapshot => { window.snapshot = snapshot; },
+  onMessage: (message, title) => events.push({ message, title }),
+});
+window.harness = { game, events, CELL, FUSE_CELLS, SPAWN, findPath };
+</script></body></html>

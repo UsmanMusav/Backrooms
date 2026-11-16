@@ -1,0 +1,43 @@
+{
+  "name": "backrooms-lost-signal",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc && tsc -p tsconfig.server.json && vite build && node scripts/build-server.mjs",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "start": "node server/cli.mjs",
+    "build:windows": "npm run build && node scripts/build-windows.mjs",
+    "desktop": "node desktop/main.cjs",
+    "verify:windows": "node scripts/verify-windows.mjs",
+    "test:desktop": "node scripts/test-desktop.mjs",
+    "release:check": "node scripts/publish-release.mjs --dry-run"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.2.5",
+    "@fontsource/manrope": "^5.2.8",
+    "@fontsource/oswald": "^5.2.6",
+    "three": "^0.180.0",
+    "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.180.0",
+    "@types/ws": "^8.18.2",
+    "@webviewjs/webview": "0.6.0",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
+    "resedit": "^3.1.1",
+    "tar": "^7.5.23",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  },
+  "description": "BACKROOMS MIMIC — first-person horror, solo and 1–4 player co-op",
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}
