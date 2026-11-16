@@ -5,6 +5,8 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { resolve, sep, extname } from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
 import { GameRoom } from '../shared/room.ts';
+import type { MimicPlanner } from '../shared/mind.ts';
+import { plannerFromEnvironment, defaultAIInfo } from './mimic-llm.ts';
 import { PROTOCOL, PORT } from '../shared/protocol.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
 
@@ -13,7 +15,8 @@ const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.woff': 'font/woff', '.png': 'image/png', '.json': 'application/json', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary', '.txt': 'text/plain; charset=utf-8' };
 export const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; media-src 'self' blob:; object-src 'none'; base-uri 'self'";
 
-export function createGameServer(options: { server?: Server; distDir?: string; assets?: Map<string, Buffer> } = {}) {
+export function createGameServer(options: { server?: Server; distDir?: string; assets?: Map<string, Buffer>; planner?: MimicPlanner | null } = {}) {
+  const planner = options.planner === null ? undefined : options.planner ?? plannerFromEnvironment();
   const rooms = new Map<string, GameRoom>();
   const sockets = new Set<Socket>();
   const root = resolve(options.distDir ?? 'dist');
@@ -26,7 +29,7 @@ export function createGameServer(options: { server?: Server; distDir?: string; a
     response.setHeader('Referrer-Policy', 'no-referrer');
     if (pathname === '/api/health') {
       response.setHeader('Content-Type', 'application/json');
-      response.end(JSON.stringify({ ok: true, protocol: PROTOCOL, rooms: rooms.size }));
+      response.end(JSON.stringify({ ok: true, protocol: PROTOCOL, rooms: rooms.size, ai: defaultAIInfo(planner) }));
       return;
     }
     if (pathname === '/ws') { response.writeHead(426).end('WebSocket required'); return; }
@@ -102,7 +105,7 @@ export function createGameServer(options: { server?: Server; distDir?: string; a
           if (message.t === 'create') {
             if (rooms.size >= 64) throw new Error('Сервер заполнен. Попробуйте позже.');
             const code = makeCode();
-            room = new GameRoom(code, line => broadcast(code, { t: 'chat', line }), randomUUID);
+            room = new GameRoom(code, line => broadcast(code, { t: 'chat', line }), randomUUID, Date.now, { planner });
             created = true;
           } else {
             if (typeof message.code !== 'string') throw new Error('Введите код комнаты.');
@@ -112,13 +115,14 @@ export function createGameServer(options: { server?: Server; distDir?: string; a
           room.add(socket.playerId, message.name);
           if (created) rooms.set(room.code, room);
           socket.room = room.code;
-          send(socket, { t: 'welcome', id: socket.playerId, room: room.view() });
+          send(socket, { t: 'welcome', id: socket.playerId, room: room.view(), history: room.getHistory() });
           publish(room);
           return;
         }
         const room = socket.room ? rooms.get(socket.room) : undefined;
         if (!room) throw new Error('Сначала создайте комнату или присоединитесь.');
         switch (message.t) {
+          case 'rename': room.rename(socket.playerId, message.name); break;
           case 'ready': if (typeof message.ready === 'boolean') room.ready(socket.playerId, message.ready); break;
           case 'start': room.start(socket.playerId); break;
           case 'lobby': room.lobby(socket.playerId); break;
@@ -137,7 +141,7 @@ export function createGameServer(options: { server?: Server; distDir?: string; a
       const room = socket.room ? rooms.get(socket.room) : undefined;
       if (!room) return;
       room.remove(socket.playerId);
-      if (!room.members.size) rooms.delete(room.code);
+      if (!room.members.size) { room.dispose(); rooms.delete(room.code); }
       else publish(room);
     });
   });
@@ -172,11 +176,12 @@ export function createGameServer(options: { server?: Server; distDir?: string; a
     httpServer.off('upgrade', upgrade);
     for (const socket of sockets) socket.terminate();
     websocket.close();
+    for (const room of rooms.values()) room.dispose();
     rooms.clear();
   };
   httpServer.once('close', cleanup);
   return {
-    httpServer, websocket, rooms,
+    httpServer, websocket, rooms, aiInfo: () => defaultAIInfo(planner),
     listen: (port = PORT, host = '0.0.0.0') => new Promise<number>((resolvePort, reject) => {
       const onError = (error: Error) => reject(error);
       httpServer.once('error', onError);

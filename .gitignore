@@ -10,3 +10,8 @@ playwright-report/
 # Reproducible native staging and downloadable builds
 .desktop/
 artifacts/
+
+# Server-only AI credentials (never VITE_* or client assets)
+.env
+.env.*
+!.env.example

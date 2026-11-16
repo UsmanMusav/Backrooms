@@ -7,6 +7,7 @@ const { join, resolve } = require('node:path');
 const { networkInterfaces, homedir } = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { createGameServer } = require('../server/index.ts');
+const { PROTOCOL } = require('../shared/protocol.ts');
 const { version: GAME_VERSION } = require('../package.json');
 
 async function boot() {
@@ -16,7 +17,7 @@ async function boot() {
   const assets = isSea() ? new Map(getAssetKeys().filter(k => k.startsWith('client/')).map(k => [k.slice(7), asset(k)])) : undefined;
   if (process.argv.includes('--self-test')) {
     if (!assets?.has('index.html') || asset('webview.node').toString('ascii', 0, 2) !== 'MZ') throw new Error('Embedded resources are invalid');
-    const testServer = createGameServer({ assets });
+    const testServer = createGameServer({ assets, planner: null });
     const port = await testServer.listen(0, '127.0.0.1');
     const response = await fetch(`http://127.0.0.1:${port}/`);
     const html = await response.text();
@@ -33,15 +34,22 @@ async function boot() {
     }
     if (!asset('THIRD_PARTY_NOTICES.txt').toString('utf8').includes('Quaternius')) throw new Error('Character attribution is missing');
     const { WebSocket } = require('ws');
-    const code = await new Promise((resolveRoom, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, 'backrooms-v1');
+    let testSocket;
+    const probe = await new Promise((resolveRoom, reject) => {
+      const ws = testSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`, PROTOCOL);
       ws.on('open', () => ws.send(JSON.stringify({ t: 'create', name: 'BuildCheck' })));
       ws.on('error', reject);
-      ws.on('message', data => { const message = JSON.parse(String(data)); if (message.t === 'welcome') { ws.close(); resolveRoom(message.room.code); } });
+      ws.on('message', data => { const message = JSON.parse(String(data)); if (message.t === 'welcome') { resolveRoom({ code: message.room.code, id: message.id }); } });
       setTimeout(() => { ws.terminate(); reject(new Error('Embedded WebSocket smoke test timed out')); }, 5000).unref();
     });
-    await testServer.close();
-    console.log(JSON.stringify({ ok: true, protocol: health.protocol, assets: assets.size, characterClips: modelJSON.animations.length, room: code, node: process.versions.node }));
+    const room = testServer.rooms.get(probe.code);
+    room.rename(probe.id, 'NativeCheck'); room.start(probe.id); room.fuses[0] = true; room.tick(.05);
+    room.say(probe.id, 'ты где?');
+    for (let i = 0; i < 65; i++) room.tick(.05);
+    const neuralChat = room.getHistory().some(line => line.senderId === room.mimic?.actor.id && line.text);
+    if (health.ai?.mode !== 'neural' || !neuralChat || room.mimic.actor.name !== 'NativeCheck' || room.mimic.actor.id === probe.id) throw new Error('Embedded neural nickname/chat smoke test failed');
+    testSocket.close(); await testServer.close();
+    console.log(JSON.stringify({ ok: true, protocol: health.protocol, assets: assets.size, characterClips: modelJSON.animations.length, neuralChat, room: probe.code, node: process.versions.node }));
     process.exit(0);
   }
   if (isSea()) {

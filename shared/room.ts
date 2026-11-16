@@ -3,13 +3,12 @@ import { MimicBrain } from './mimic.ts';
 import { CAPACITY } from './protocol.ts';
 import type { Actor, ChatLine, Interaction, Pose, RoomPhase, RoomView } from './protocol.ts';
 
-type Member = Actor & { ready: boolean; lastSeq: number; lastMoveAt: number; budget: number; chatAt: number };
-export function cleanName(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 18) : '';
-}
-export function cleanChat(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 160) : '';
-}
+import { cleanChat, cleanName, nameKey, reservedName } from './chat.ts';
+import { LOCAL_AI, parseMimicPlan } from './mind.ts';
+import type { MimicPlanner } from './mind.ts';
+export { cleanChat, cleanName } from './chat.ts';
+
+type Member = Actor & { ready: boolean; lastSeq: number; lastMoveAt: number; budget: number; chatAt: number; renameAt: number };
 export function validPose(pose: unknown): pose is Pose {
   if (!pose || typeof pose !== 'object') return false;
   const p = pose as Record<string, unknown>;
@@ -30,26 +29,35 @@ export class GameRoom {
   powered = false;
   mimic?: MimicBrain;
   private serial = 0;
+  private history: ChatLine[] = [];
+  private roundChat: ChatLine[] = [];
+  private planner?: MimicPlanner;
+  private pending?: AbortController;
+  private epoch = 0;
+  private disposed = false;
+  private nextThink = 0;
+  private lastThink = -100;
+  private aiFallback = false;
   private makeId: () => string;
   private now: () => number;
   private emit: (line: ChatLine) => void;
 
-  constructor(code: string, emit: (line: ChatLine) => void, makeId: () => string, now = Date.now) {
+  constructor(code: string, emit: (line: ChatLine) => void, makeId: () => string, now = Date.now, options: { planner?: MimicPlanner } = {}) {
     this.code = code;
     this.emit = emit;
     this.makeId = makeId;
-    this.now = now;
+    this.now = now; this.planner = options.planner;
   }
 
   add(id: string, nickname: string) {
     if (this.phase !== 'lobby') throw new Error('Экспедиция уже идёт. Дождитесь возвращения в лобби.');
     if (this.members.size >= CAPACITY) throw new Error('В комнате уже четыре игрока.');
-    const name = cleanName(nickname);
-    if (!name) throw new Error('Введите имя: буквы, цифры, пробел, дефис или подчёркивание.');
+    const name = this.availableName(nickname, id);
+    if (this.members.has(id)) throw new Error('Игрок уже в комнате.');
     if (!this.hostId) this.hostId = id;
     const used = new Set([...this.members.values()].map(p => p.skin));
     const skin = [0, 1, 2, 3].find(s => !used.has(s)) ?? 0;
-    this.members.set(id, { id, name, skin, ready: id === this.hostId, alive: true, ...this.spawnPose(skin), lastSeq: -1, lastMoveAt: this.now(), budget: 0.5, chatAt: -Infinity });
+    this.members.set(id, { id, name, skin, ready: id === this.hostId, alive: true, ...this.spawnPose(skin), lastSeq: -1, lastMoveAt: this.now(), budget: 0.5, chatAt: -Infinity, renameAt: -Infinity });
     this.system(`${name} подключился к экспедиции.`);
   }
 
@@ -63,8 +71,29 @@ export class GameRoom {
       if (host) { host.ready = true; this.system(`${host.name} теперь ведущий комнаты.`); }
     }
     this.system(`${player.name} потерял соединение.`);
+    this.cancelThinking(); this.nextThink = Math.max(this.elapsed + 1.2, this.lastThink + 6);
     if (this.phase === 'playing' && ![...this.members.values()].some(p => p.alive)) this.phase = 'lost';
+    if (!this.members.size || this.phase !== 'playing') this.cancelThinking();
   }
+
+  private availableName(value: unknown, id: string) {
+    const name = cleanName(value);
+    if (!name) throw new Error('Введите ник: буквы, цифры, пробел, дефис или подчёркивание, до 18 символов.');
+    if (reservedName(name)) throw new Error('Этот ник зарезервирован системой.');
+    if ([...this.members.values()].some(p => p.id !== id && nameKey(p.name) === nameKey(name))) throw new Error('Этот ник уже занят другим игроком.');
+    return name;
+  }
+  rename(id: string, value: unknown) {
+    const player = this.member(id);
+    if (this.phase !== 'lobby') throw new Error('Ник можно менять только в лобби, до начала экспедиции.');
+    const name = this.availableName(value, id);
+    if (name === player.name) return;
+    if (this.now() - player.renameAt < 1000) throw new Error('Слишком частая смена ника.');
+    const previous = player.name; player.name = name; player.renameAt = this.now(); player.ready = id === this.hostId;
+    this.system(`${previous} сменил ник на ${name}.`);
+  }
+  getHistory() { return this.history.map(line => ({ ...line })); }
+  aiInfo() { const info = this.planner?.info() ?? { ...LOCAL_AI }; return { ...info, ...(this.aiFallback ? { state: 'fallback' as const } : {}) }; }
 
   private spawnPose(index: number): Pose {
     return { x: SPAWN.x * CELL + (index % 2) * 0.8 - 0.4, z: SPAWN.z * CELL + Math.floor(index / 2) * 0.9,
@@ -81,6 +110,7 @@ export class GameRoom {
     if (id !== this.hostId) throw new Error('Начать экспедицию может только ведущий.');
     if (this.phase !== 'lobby') throw new Error('Экспедиция уже началась.');
     if (![...this.members.values()].every(p => p.ready)) throw new Error('Дождитесь готовности всех игроков.');
+    this.cancelThinking(); this.roundChat = []; this.nextThink = 0; this.lastThink = -100; this.aiFallback = false;
     this.phase = 'playing';
     this.round++;
     this.elapsed = 0;
@@ -96,6 +126,7 @@ export class GameRoom {
   lobby(id: string) {
     if (id !== this.hostId) throw new Error('Вернуть команду в лобби может только ведущий.');
     if (this.phase === 'playing') throw new Error('Экспедиция ещё идёт.');
+    this.cancelThinking();
     this.phase = 'lobby';
     this.mimic = undefined;
     for (const member of this.members.values()) { member.ready = member.id === this.hostId; member.alive = true; }
@@ -143,7 +174,7 @@ export class GameRoom {
       if (!this.powered) { this.powered = true; this.system('Питание восстановлено. Дверь рядом со щитком открыта!'); }
     } else {
       if (!this.powered) throw new Error('Выход заперт: сначала включите щиток.');
-      this.phase = 'won';
+      this.phase = 'won'; this.cancelThinking();
       this.system(`${player.name} открыл выход. Экспедиция спасена.`);
     }
   }
@@ -154,8 +185,9 @@ export class GameRoom {
     if (!text) return;
     if (this.now() - member.chatAt < 900) throw new Error('Слишком частые сообщения.');
     member.chatAt = this.now();
-    this.emit({ id: this.makeId(), senderId: id, name: member.name, text, at: this.now() });
-    this.mimic?.hear(text);
+    this.post({ id: this.makeId(), senderId: id, name: member.name, text, at: this.now() });
+    this.mimic?.hear(text, id);
+    this.nextThink = Math.min(this.nextThink, Math.max(this.elapsed + 1.2, this.lastThink + 6));
   }
 
   tick(dt: number) {
@@ -163,20 +195,25 @@ export class GameRoom {
     dt = Math.min(dt, 0.1);
     this.elapsed += dt;
     const players = [...this.members.values()];
-    if (!this.mimic && (this.elapsed > 18 || this.fuses.some(Boolean))) {
-      this.mimic = new MimicBrain(this.map, players, this.makeId(), this.round * 983 + this.code.split('').reduce((a, c) => a + c.charCodeAt(0), 0));
+    if (!this.mimic && (this.elapsed > 12 || this.fuses.some(Boolean))) {
+      this.mimic = new MimicBrain(this.map, players, this.makeId(), this.round * 983 + this.code.split('').reduce((a, c) => a + c.charCodeAt(0), 0), { copyLonePlayer: true });
+      this.mimic.useExternalSpeech(!!this.planner);
+      const last = this.roundChat.filter(line => !line.system).at(-1);
+      if (last) this.mimic.hear(last.text, last.senderId);
     }
     if (!this.mimic) return;
-    const event = this.mimic.tick(dt, players, this.fuses);
+    const event = this.mimic.tick(dt, players, this.fuses, this.powered);
     if (event.speech) {
-      this.emit({ id: this.makeId(), senderId: this.mimic.actor.id, name: this.mimic.actor.name, text: event.speech, at: this.now() });
+      this.post({ id: this.makeId(), senderId: this.mimic.actor.id, name: this.mimic.actor.name, text: event.speech, at: this.now() });
     }
-    if (event.revealedNow) this.system('Помехи в канале. Один из биосигналов не совпадает с записью.');
+    if (event.revealedNow) { this.cancelThinking(); this.system('Помехи в канале. Один из биосигналов не совпадает с записью.'); }
     if (event.victim) {
       const victim = this.members.get(event.victim);
       if (victim) { victim.alive = false; victim.moving = false; this.system(`Биосигнал ${victim.name} потерян.`); }
       if (![...this.members.values()].some(p => p.alive)) this.phase = 'lost';
     }
+    if (this.phase === 'playing' && this.mimic.phase === 'masked') this.think(players);
+    else this.cancelThinking();
   }
 
   view(): RoomView {
@@ -185,7 +222,38 @@ export class GameRoom {
     if (this.mimic && this.phase !== 'lobby') actors.push({ ...this.mimic.actor });
     return { code: this.code, hostId: this.hostId, phase: this.phase, round: this.round, elapsed: this.elapsed,
       players: players.map(({ id, name, skin, ready, alive }) => ({ id, name, skin, ready, alive })), actors,
-      fuses: [...this.fuses], powered: this.powered, capacity: CAPACITY };
+      fuses: [...this.fuses], powered: this.powered, capacity: CAPACITY, ai: this.aiInfo() };
+  }
+
+  private post(line: ChatLine) {
+    this.history.push({ ...line }); this.history = this.history.slice(-40);
+    if (this.phase === 'playing') { this.roundChat.push({ ...line }); this.roundChat = this.roundChat.slice(-30); }
+    this.emit(line);
+  }
+  private cancelThinking() { this.epoch++; this.pending?.abort(); this.pending = undefined; }
+  dispose() { this.disposed = true; this.cancelThinking(); }
+  private think(players: Actor[]) {
+    const brain = this.mimic, planner = this.planner;
+    if (!brain || !planner || this.pending || this.disposed || this.elapsed < this.nextThink) return;
+    const controller = this.pending = new AbortController(), epoch = this.epoch;
+    const bindings = players.map((p, index) => ({ id: p.id, alias: `p${index}` }));
+    const observation = brain.observe(players, this.roundChat, this.fuses, this.powered);
+    brain.useExternalSpeech(true); this.lastThink = this.elapsed; this.nextThink = this.elapsed + 7.5;
+    const current = () => !this.disposed && this.epoch === epoch && this.mimic === brain && this.phase === 'playing' && brain.phase === 'masked' && !controller.signal.aborted;
+    // A faulty/custom provider must not hold this room indefinitely, even if it ignores abort.
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(16_000)]);
+    let onAbort: () => void;
+    const cancelled = new Promise<null>(resolve => { onAbort = () => resolve(null); signal.addEventListener('abort', onAbort, { once: true }); });
+    const request = Promise.resolve().then(() => current() ? planner.plan(observation, signal) : null);
+    void Promise.race([request, cancelled]).then(value => {
+      if (!current()) return;
+      const plan = parseMimicPlan(value, bindings.filter(p => this.members.get(p.id)?.alive).map(p => p.alias));
+      this.aiFallback = !plan;
+      if (plan) brain.direct(plan, [...this.members.values()], bindings.find(p => p.alias === plan.target)?.id, bindings.find(p => p.alias === plan.copy)?.id);
+      else { brain.useExternalSpeech(false); this.nextThink = this.elapsed + 15; }
+    }).catch(() => {
+      if (current()) { this.aiFallback = true; brain.useExternalSpeech(false); this.nextThink = this.elapsed + 15; }
+    }).finally(() => { signal.removeEventListener('abort', onAbort); if (this.pending === controller) this.pending = undefined; });
   }
 
   private member(id: string) {
@@ -194,6 +262,6 @@ export class GameRoom {
     return member;
   }
   private system(text: string) {
-    this.emit({ id: `${this.code}-${++this.serial}`, senderId: '', name: 'АРХИВ', text, at: this.now(), system: true });
+    this.post({ id: `${this.code}-${++this.serial}`, senderId: '', name: 'АРХИВ', text, at: this.now(), system: true });
   }
 }

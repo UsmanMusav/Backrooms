@@ -17,6 +17,7 @@ export default defineConfig({
   },
   webServer: {
     command: 'npm run dev -- --port 5173',
+    env: { MIMIC_LLM_URL: '' }, // Browser tests never contact a configured paid provider.
     url: 'http://localhost:5173',
     reuseExistingServer: !process.env.CI,
   },

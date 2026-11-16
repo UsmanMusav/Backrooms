@@ -274,7 +274,7 @@ function showControls() {
     <div class="control-row"><span>Включить / выключить фонарь</span><span class="key-group">${mobile ? icon('flashlight') : '<kbd>F</kbd>'}</span></div>
     <div class="control-row"><span>Показать ориентир на 12 секунд</span><kbd>H</kbd></div>
     <div class="control-row"><span>Пауза</span>${mobile ? icon('pause') : '<span class="key-group"><kbd>ESC</kbd><span>или</span><kbd>P</kbd></span>'}</div>
-    <div class="control-row"><span>Текстовая рация / короткий сигнал</span><span class="key-group"><kbd>T</kbd><kbd>Q</kbd></span></div>
+    <div class="control-row"><span>Чат экспедиции / короткий сигнал</span><span class="key-group"><kbd>ENTER</kbd><kbd>T</kbd><kbd>Q</kbd></span></div>
     <div class="control-warning">${icon('headphones')}<p>Прислушивайтесь. Бег слышно издалека. Если шаги продолжаются, когда вы остановились, — они не ваши.</p></div>
     <div class="dialog-footer"><span></span><button class="primary-button" id="controls-done"><span>ПОНЯТНО</span>${icon('arrow')}</button></div>
   `, 'NOCLIP / ПРОТОКОЛ ВЫЖИВАНИЯ');

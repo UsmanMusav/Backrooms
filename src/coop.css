@@ -84,10 +84,10 @@
 .radio-pulse { width: 4px; height: 4px; background: #a1b486; box-shadow: 0 0 7px #a1b48655; }
 .radio-lines { max-height: 143px; overflow: auto; margin: 10px 0 0; padding: 9px 12px 2px; background: linear-gradient(90deg, #10190dd9, #10190d88); opacity: 0; transition: opacity .6s; scrollbar-width: thin; scrollbar-color: #586c46 transparent; }
 #radio.has-message .radio-lines, #radio.is-open .radio-lines { opacity: 1; }
-#radio.is-open { pointer-events: auto; }
+#radio.is-open { pointer-events: auto; width: 355px; }
 #radio.is-open .radio-lines { max-height: 235px; }
 #radio-composer { margin-top: 7px; pointer-events: auto; }
-.radio-help { display: block; padding-top: 7px; font: 6px var(--mono); letter-spacing: .04em; color: #b0be9a; text-shadow: 0 1px 3px #000; }
+.radio-help { display: flex; justify-content: space-between; gap: 10px; padding-top: 7px; font: 6px var(--mono); letter-spacing: .04em; color: #b0be9a; text-shadow: 0 1px 3px #000; }
 
 @media (max-height: 820px) and (min-width: 801px) {
   .lobby-header { padding-top: 22px; padding-bottom: 22px; }
@@ -123,7 +123,7 @@
   #radio { right: 22px; bottom: 185px; width: 255px; }
   .radio-lines { max-height: 98px; }
   .radio-toggle { font-size: 6px; }
-  #radio.is-open { bottom: 32px; }
+  #radio.is-open { bottom: 32px; width: 310px; }
   #radio.is-open .radio-lines { max-height: 180px; }
 }
 @media (max-height: 720px) {
@@ -153,3 +153,26 @@
   .lobby-narrative h1 { font-size: 38px; }
   .lobby-narrative h1 br { display: initial; }
 }
+
+/* Player profile and the existing radio now share one visible chat surface. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+#nickname-form { margin-top: 19px; }
+#nickname-form label { display: block; font: 7px var(--mono); letter-spacing: .1em; color: #a5b494; margin-bottom: 9px; }
+#nickname-form > div { display: flex; border: 1px solid #aab7903b; }
+#nickname-form .text-input { min-width: 0; flex: 1; height: 38px; border: none; }
+#rename-submit { padding: 0 12px; font: 7px var(--mono); letter-spacing: .05em; color: #ced6b8; background: #b7c19a0c; border-left: 1px solid #aab7903b; }
+#rename-submit:hover { background: #b7c19a20; }
+#nickname-form small { display: block; margin-top: 8px; font-size: 8px; line-height: 1.7; color: #91a47f; }
+.lobby-narrative > .ai-notice { font-size: 8px; line-height: 1.9; border-left: 1px solid #a6b78755; padding-left: 10px; margin-top: 17px; color: #94a982; }
+.chat-line > time { float: right; margin-left: 12px; color: #809774; font: 6px var(--mono); }
+.chat-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 9px; background: #10190cc7; }
+.chat-toolbar .radio-toggle { background: transparent; flex-shrink: 0; }
+#chat-self-name { font: 7px var(--mono); color: #b3c49c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 9px; }
+#chat-unread { color: #e4cc92; font-size: 14px; line-height: 8px; }
+#chat-ai-status { display: none; margin-top: 9px; font-size: 8px; line-height: 1.5; color: #a7b995; text-shadow: 0 1px 3px #000; }
+#radio.is-open #chat-ai-status { display: block; }
+#radio.is-open .chat-line { font-size: 11px; }
+#radio.is-open .chat-line > span { font-size: 8px; }
+#radio.is-open .radio-lines { overscroll-behavior: contain; }
+#radio-input:focus-visible { outline: 1px solid #c7d0a0; outline-offset: -2px; }
+@media (max-width: 700px) { #radio-composer input { font-size: 16px; } }

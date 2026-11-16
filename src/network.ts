@@ -22,6 +22,7 @@ export class CoopClient {
   private intentionalClose = false;
   private sequence = 0;
   onRoom: (room: RoomView) => void = () => {};
+  onHistory: (lines: ChatLine[]) => void = () => {};
   onChat: (line: ChatLine) => void = () => {};
   onError: (message: string) => void = () => {};
   onDisconnect: () => void = () => {};
@@ -46,7 +47,7 @@ export class CoopClient {
           clearTimeout(this.timeout);
           established = true;
           this.id = message.id;
-          this.room = message.room;
+          this.room = message.room; this.onHistory(message.history ?? []);
           if (!settled) { settled = true; resolve(); }
           this.onRoom(message.room);
           this.heartbeat = window.setInterval(() => this.send({ t: 'ping', at: Date.now() }), 4000);
@@ -58,7 +59,7 @@ export class CoopClient {
           else this.onError(message.message);
         } else if (message.t === 'pong') this.latency = Math.max(0, Date.now() - message.at);
       };
-      socket.onerror = () => fail('Не удалось подключиться. Проверьте адрес сервера, WebSocket и брандмауэр.');
+      socket.onerror = () => fail('Не удалось подключиться. Проверьте адрес, WebSocket, брандмауэр и одинаковую версию игры у всех участников.');
       socket.onclose = () => {
         if (generation !== this.generation) return;
         clearTimeout(this.timeout); clearInterval(this.heartbeat);

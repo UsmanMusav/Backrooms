@@ -1,6 +1,10 @@
-import { CELL, FUSE_CELLS, MAP_SIZE, canStand, cellAt, clearSight, findPath, seededRandom } from '../src/level.ts';
+import { CELL, FUSE_CELLS, PANEL_CELL, EXIT_CELL, SPAWN, MAP_SIZE, canStand, cellAt, clearSight, findPath, seededRandom } from '../src/level.ts';
 import type { Cell } from '../src/level.ts';
-import type { Actor } from './protocol.ts';
+import type { Actor, ChatLine } from './protocol.ts';
+import { classifyChat, localReply, neuralAction } from './neural-mind.ts';
+import type { ChatIntent } from './neural-mind.ts';
+import { cleanChat } from './chat.ts';
+import type { MimicAction, MimicObservation, MimicPlan } from './mind.ts';
 
 export type MimicTick = { victim?: string; speech?: string; revealedNow?: boolean };
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -22,20 +26,28 @@ export class MimicBrain {
   private pauseTimer = 0;
   private nextPause = 4;
   private nextSpeech = 9;
-  private mode: 'follow' | 'guide' | 'wait' = 'follow';
+  private mode: MimicAction = 'follow';
+  private directed?: { action: MimicAction; until: number; flashlight: MimicPlan['flashlight'] };
+  private wanderGoal?: Cell;
+  private lastCopy = -20;
+  private heard?: { intent: ChatIntent; at: number; due: number; senderId: string };
+  private lastHeard?: { intent: ChatIntent; at: number; senderId: string };
+  private queuedSpeech?: { text: string; due: number };
+  private lastSpokenAt = -20;
+  private lastSpoken = '';
+  private externalSpeech = false;
   private learnedSpeed = 2.1;
   private observed = new Map<string, { x: number; z: number }>();
-  private lastPhrase = '';
   private random: () => number;
   private map: boolean[][];
 
-  constructor(map: boolean[][], players: Actor[], id = 'offline-companion', seed = 7163) {
+  constructor(map: boolean[][], players: Actor[], id = 'offline-companion', seed = 7163, options: { copyLonePlayer?: boolean } = {}) {
     this.map = map;
     this.random = seededRandom(seed);
     const target = players.find(p => p.alive);
     if (!target) throw new Error('Mimic needs a living target');
     this.targetId = target.id;
-    const identity = players.find(p => p.id !== target.id) ?? { name: 'Саша', skin: 2 };
+    const identity = players.find(p => p.id !== target.id && p.alive) ?? (options.copyLonePlayer ? target : { name: 'Саша', skin: 2 });
     const candidates: Cell[] = [];
     for (let z = 2; z < MAP_SIZE - 2; z++) {
       for (let x = 2; x < MAP_SIZE - 2; x++) {
@@ -52,13 +64,48 @@ export class MimicBrain {
       yaw: target.yaw, pitch: 0, flashlight: true, sprint: false, moving: false, alive: true };
   }
 
-  hear(text: string) {
-    // Only in-game public text. No microphone recording, voice cloning or private messages.
-    const phrase = text.trim();
-    if (phrase.length > 1 && phrase.length < 90) this.lastPhrase = phrase;
+  hear(text: string, senderId = '') {
+    const phrase = cleanChat(text);
+    if (!phrase) return;
+    const { intent } = classifyChat(phrase);
+    this.lastHeard = { intent, senderId, at: this.age };
+    this.heard = { ...this.lastHeard, due: this.age + 1.1 + Math.min(1.8, phrase.length / 65) + this.random() * .6 };
   }
 
-  tick(dt: number, players: Actor[], takenFuses: boolean[]): MimicTick {
+  useExternalSpeech(enabled: boolean) { this.externalSpeech = enabled; }
+  queueSpeech(text: string) {
+    const clean = cleanChat(text);
+    if (clean && clean !== this.lastSpoken) this.queuedSpeech = { text: clean, due: this.age + .8 + Math.min(1.5, clean.length / 90) };
+  }
+  private copyIdentity(id: string, players: Actor[]) {
+    const player = players.find(p => p.id === id && p.alive);
+    if (!player || this.phase !== 'masked' || this.age - this.lastCopy < 12) return;
+    if (players.some(p => p.alive && distance(p, this.actor) < 13 && clearSight(this.map, p.x, p.z, this.actor.x, this.actor.z))) return;
+    this.actor.name = player.name; this.actor.skin = player.skin; this.lastCopy = this.age;
+  }
+  direct(plan: MimicPlan, players: Actor[], targetId?: string, copyId?: string) {
+    if (this.phase !== 'masked') return;
+    if (targetId && targetId !== this.targetId && players.some(p => p.id === targetId && p.alive)) {
+      this.targetId = targetId; this.trust = 0; this.route = []; this.wanderGoal = undefined;
+    }
+    if (copyId) this.copyIdentity(copyId, players);
+    this.directed = { action: plan.action, until: this.age + plan.duration, flashlight: plan.flashlight };
+    this.planTimer = 0;
+    this.queueSpeech(plan.say);
+  }
+  observe(players: Actor[], chat: ChatLine[], fuses: boolean[], powered: boolean): MimicObservation {
+    return { phase: this.phase, name: this.actor.name, cell: cellAt(this.actor.x, this.actor.z), action: this.mode, fuses: fuses.filter(Boolean).length, powered,
+      players: players.map((p, index) => {
+        const d = distance(p, this.actor), visible = p.alive && d < 14 && clearSight(this.map, p.x, p.z, this.actor.x, this.actor.z);
+        return { alias: `p${index}`, name: p.name, alive: p.alive, visible,
+          ...(visible ? { distance: Math.round(d * 10) / 10, moving: p.moving, sprint: p.sprint, flashlight: p.flashlight } : {}) };
+      }), chat: chat.filter(line => !line.system).slice(-10).map(({ name, text, senderId }) => {
+        const index = players.findIndex(p => p.id === senderId);
+        return { name, text, source: senderId === this.actor.id ? 'self' : 'player', ...(index >= 0 ? { alias: `p${index}` } : {}) };
+      }) };
+  }
+
+  tick(dt: number, players: Actor[], takenFuses: boolean[], powered = false): MimicTick {
     const result: MimicTick = {};
     const alive = players.filter(p => p.alive);
     let target = alive.find(p => p.id === this.targetId);
@@ -117,10 +164,20 @@ export class MimicBrain {
       this.nextPause = 5 + this.random() * 6;
       this.actor.flashlight = this.random() > 0.12 ? target.flashlight : !target.flashlight;
     }
-    if (this.phase === 'masked' && this.nextSpeech < 0 && sight && d < 12) {
-      const lines = ['я рядом', 'сюда, кажется проход', 'подожди меня', 'держимся вместе', 'проверю следующую комнату'];
-      result.speech = this.lastPhrase && this.random() > 0.45 ? this.lastPhrase : lines[Math.floor(this.random() * lines.length)];
-      this.nextSpeech = 18 + this.random() * 16;
+    if (this.directed && this.age > this.directed.until) this.directed = undefined;
+    if (this.phase === 'masked' && this.directed) {
+      this.actor.flashlight = this.directed.flashlight === 'match' ? target.flashlight : this.directed.flashlight === 'on';
+    }
+    if (this.phase === 'masked' && this.age - this.lastSpokenAt > 5.5) {
+      let speech = '';
+      if (this.queuedSpeech && this.age >= this.queuedSpeech.due) { speech = this.queuedSpeech.text; this.queuedSpeech = undefined; }
+      else if (!this.externalSpeech && ((this.heard && this.age >= this.heard.due) || (this.nextSpeech < 0 && sight && d < 14))) {
+        const intent = this.heard?.intent ?? 'other';
+        speech = localReply(intent, this.mode, { name: this.actor.name, fuses: takenFuses.filter(Boolean).length, powered, nearEntry: distance(this.actor, { x: SPAWN.x * CELL, z: SPAWN.z * CELL }) < 10 }, this.random);
+      }
+      if (speech && speech !== this.lastSpoken) {
+        result.speech = speech; this.lastSpoken = speech; this.lastSpokenAt = this.age; this.heard = undefined; this.nextSpeech = 15 + this.random() * 13;
+      } else if (speech) this.nextSpeech = 2;
     }
 
     if (this.planTimer <= 0) {
@@ -137,15 +194,37 @@ export class MimicBrain {
         }
         goal = this.searchGoal;
       }
-      this.mode = 'follow';
-      if (this.phase === 'masked' && sight && d < 6) {
-        const objectives = FUSE_CELLS.filter((_cell, i) => !takenFuses[i]);
-        const objective = objectives.sort((a, b) => distance({ x: a.x * CELL, z: a.z * CELL }, target) - distance({ x: b.x * CELL, z: b.z * CELL }, target))[0];
-        const path = objective ? findPath(this.map, cellAt(target.x, target.z), objective) : [];
-        if (path.length > 2 && this.random() > 0.35) {
-          goal = path[Math.min(2, path.length - 1)];
-          this.mode = 'guide';
-        } else if (d < 3.1) this.mode = 'wait';
+      if (this.phase === 'masked') {
+        const context = this.lastHeard, recent = !!context && this.age - context.at < 8;
+        const action = this.directed?.action ?? neuralAction([
+          Math.min(1, d / 24), sight ? 1 : 0, target.moving ? 1 : 0, target.sprint ? 1 : 0,
+          takenFuses.filter(Boolean).length / 3, alive.filter(p => distance(p, this.actor) < 9).length / 4,
+          this.trust / 40, Math.min(1, this.age / 60), recent ? 1 : 0, recent && context?.intent === 'suspicion' ? 1 : 0,
+          recent && context?.intent === 'wait' ? 1 : 0, this.random(),
+        ]);
+        if (action !== this.mode) this.wanderGoal = undefined;
+        this.mode = action;
+        if (recent && context?.senderId && !sight && action !== 'wait') this.copyIdentity(context.senderId, alive);
+        if (action === 'lead') {
+          const objectives = FUSE_CELLS.filter((_cell, i) => !takenFuses[i]);
+          const objective = objectives.sort((a, b) => distance({ x: a.x * CELL, z: a.z * CELL }, target) - distance({ x: b.x * CELL, z: b.z * CELL }, target))[0] ?? (powered ? EXIT_CELL : PANEL_CELL);
+          const path = findPath(this.map, cellAt(target.x, target.z), objective);
+          if (path.length > 2) goal = path[Math.min(2, path.length - 1)];
+          else goal = objective;
+        } else if (action === 'explore' || action === 'lure') {
+          if (!this.wanderGoal || distance(this.actor, { x: this.wanderGoal.x * CELL, z: this.wanderGoal.z * CELL }) < .3) {
+            const origin = cellAt(this.actor.x, this.actor.z), options: Cell[] = [];
+            for (let z = -2; z <= 2; z++) for (let x = -2; x <= 2; x++) {
+              const cell = { x: origin.x + x, z: origin.z + z };
+              if (this.map[cell.z]?.[cell.x] !== false || (x === 0 && z === 0)) continue;
+              const path = findPath(this.map, origin, cell);
+              if (path.length > 1 && path.length < 6) options.push(cell);
+            }
+            if (action === 'lure') options.sort((a, b) => distance({ x: b.x * CELL, z: b.z * CELL }, target) - distance({ x: a.x * CELL, z: a.z * CELL }, target));
+            this.wanderGoal = action === 'lure' ? options[0] : options[Math.floor(this.random() * options.length)];
+          }
+          goal = this.wanderGoal ?? goal;
+        }
       }
       const anchor = this.route[0] ?? cellAt(this.actor.x, this.actor.z);
       const path = findPath(this.map, anchor, goal);
@@ -154,7 +233,7 @@ export class MimicBrain {
 
     const before = { x: this.actor.x, z: this.actor.z };
     const next = this.route[0];
-    const canMove = this.phase === 'revealed' || (this.pauseTimer <= 0 && this.mode !== 'wait' && (d > 2.5 || this.mode === 'guide'));
+    const canMove = this.phase === 'revealed' || (this.pauseTimer <= 0 && this.mode !== 'wait' && (d > 2.5 || ['lead', 'explore', 'lure'].includes(this.mode)));
     if (next && canMove) {
       const dx = next.x * CELL - this.actor.x;
       const dz = next.z * CELL - this.actor.z;
@@ -167,17 +246,20 @@ export class MimicBrain {
         const z = this.actor.z + dz / length * step;
         if (canStand(this.map, x, this.actor.z, 0.18)) this.actor.x = x;
         if (canStand(this.map, this.actor.x, z, 0.18)) this.actor.z = z;
-        this.actor.yaw = Math.atan2(-dx, -dz);
+        const yaw = Math.atan2(-dx, -dz);
+        this.actor.yaw += Math.atan2(Math.sin(yaw - this.actor.yaw), Math.cos(yaw - this.actor.yaw)) * (1 - Math.exp(-dt * 9));
         if (length <= step + 0.001) this.route.shift();
       }
       this.actor.sprint = gait > 2.8;
     }
     this.actor.moving = distance(before, this.actor) > 0.0005;
+    if (!this.actor.moving) this.actor.sprint = false;
     if (!this.actor.moving || (this.phase === 'masked' && this.pauseTimer > 0)) {
       if (this.phase === 'revealed' && this.searching) this.actor.yaw += dt * .8;
       else {
         const look = this.phase === 'revealed' && this.lastKnown ? { x: this.lastKnown.x * CELL, z: this.lastKnown.z * CELL } : target;
-        this.actor.yaw = Math.atan2(look.x - this.actor.x, look.z - this.actor.z) + Math.PI + Math.sin(this.age * .7) * .18;
+        const yaw = Math.atan2(look.x - this.actor.x, look.z - this.actor.z) + Math.PI + Math.sin(this.age * .7) * .18;
+        this.actor.yaw += Math.atan2(Math.sin(yaw - this.actor.yaw), Math.cos(yaw - this.actor.yaw)) * (1 - Math.exp(-dt * 5));
       }
       this.actor.pitch = Math.sin(this.age * 0.55) * 0.12;
     }

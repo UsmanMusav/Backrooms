@@ -8,7 +8,7 @@ import type { ServerMessage } from '../shared/protocol';
 // The fixture can advance its own authoritative world. No debug API is shipped to browsers.
 test('network movement, local pause, team victory, host migration, second round and defeat', async ({ page }) => {
   test.setTimeout(180_000);
-  const server = createGameServer();
+  const server = createGameServer({ planner: null });
   const port = await server.listen(0, '127.0.0.1');
   const host = new WebSocket(`ws://127.0.0.1:${port}/ws`, PROTOCOL);
   const errors: string[] = [];

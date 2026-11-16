@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import type { Server } from 'node:http';
 import { createGameServer } from './server/index';
+import { PROTOCOL } from './shared/protocol';
 
 export default defineConfig({
   plugins: [{
@@ -10,7 +11,7 @@ export default defineConfig({
       const game = createGameServer({ server: server.httpServer as Server });
       server.middlewares.use('/api/health', (_req, res) => {
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ ok: true, protocol: 'backrooms-v1', rooms: game.rooms.size }));
+        res.end(JSON.stringify({ ok: true, protocol: PROTOCOL, rooms: game.rooms.size, ai: game.aiInfo() }));
       });
     },
   }],

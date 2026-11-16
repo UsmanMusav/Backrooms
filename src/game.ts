@@ -584,7 +584,7 @@ export class BackroomsGame {
     this.flashlightModel.visible = false;
     this.setState('playing');
     void this.audio.unlock().then(() => this.audio.setActive(this.state === 'playing'));
-    this.callbacks.onMessage(this.coop ? 'Предохранители общие. Не теряйте напарников. T — текстовая рация, Q — короткий сигнал.' : 'Найдите три предохранителя. Восстановите питание щитка у входа.', this.coop ? 'КООПЕРАТИВ · MIMIC' : 'ВЫ НЕ ПОМНИТЕ, КАК СЮДА ПОПАЛИ');
+    this.callbacks.onMessage(this.coop ? 'Предохранители общие. Не теряйте напарников. Enter / T — чат, Q — короткий сигнал.' : 'Найдите три предохранителя. Восстановите питание щитка у входа.', this.coop ? 'КООПЕРАТИВ · MIMIC' : 'ВЫ НЕ ПОМНИТЕ, КАК СЮДА ПОПАЛИ');
   }
 
   pause() {
@@ -797,7 +797,7 @@ export class BackroomsGame {
     const brain = this.mimicBrain;
     if (!brain) return;
     const player = { ...this.localActor(), sprint, moving };
-    const event = brain.tick(dt, [player], this.interactables.filter(i => i.type === 'fuse').map(i => i.taken));
+    const event = brain.tick(dt, [player], this.interactables.filter(i => i.type === 'fuse').map(i => i.taken), this.powered);
     this.mimicVisual.update(brain.actor, dt, this.time, true);
     const pos = this.entity.position;
     const distance = Math.hypot(player.x - pos.x, player.z - pos.z);
