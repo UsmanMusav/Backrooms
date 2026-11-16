@@ -16,6 +16,12 @@ export class Soundscape {
   private lastHeartbeat = 0;
   private breathTime = 0;
   private step = 0;
+  private intro?: GainNode;
+  private voice?: BiquadFilterNode;
+  private outdoorNodes: AudioNode[] = [];
+  private outdoorSources: AudioScheduledSourceNode[] = [];
+  private clips = new Map<string, Promise<AudioBuffer | undefined>>();
+  private voices = new Set<AudioBufferSourceNode>();
 
   async unlock() {
     if (!this.context) this.create();
@@ -31,6 +37,9 @@ export class Soundscape {
     this.world = c.createGain(); this.world.gain.value = this.active ? 1 : 0; this.world.connect(master);
     this.ambience = c.createGain(); this.ambience.gain.value = 1; this.ambience.connect(this.world);
     this.danger = c.createGain(); this.danger.gain.value = 0; this.danger.connect(this.world);
+    // Prologue bus: street ambience and dialogue bypass the Backrooms world mix.
+    this.intro = c.createGain(); this.intro.gain.value = 1; this.intro.connect(master);
+    this.voice = c.createBiquadFilter(); this.voice.type = 'lowpass'; this.voice.frequency.value = 18000; this.voice.Q.value = .5; this.voice.connect(this.intro);
     this.reverb = c.createConvolver();
     const impulse = c.createBuffer(2, Math.floor(c.sampleRate * 1.7), c.sampleRate);
     for (let ch = 0; ch < 2; ch++) {
@@ -68,8 +77,8 @@ export class Soundscape {
   setVolume(volume: number) { this.volume = volume; this.master?.gain.setTargetAtTime(this.muted ? 0 : volume, this.context!.currentTime, .08); }
   setMuted(muted: boolean) { this.muted = muted; this.master?.gain.setTargetAtTime(muted ? 0 : this.volume, this.context!.currentTime, .08); }
 
-  private tone(frequency: number, duration: number, volume: number, type: OscillatorType = 'sine', endFrequency = frequency, delay = 0, pan = 0, world = false) {
-    const c = this.context, output = world ? this.world : this.master;
+  private tone(frequency: number, duration: number, volume: number, type: OscillatorType = 'sine', endFrequency = frequency, delay = 0, pan = 0, world = false, destination?: AudioNode) {
+    const c = this.context, output = destination ?? (world ? this.world : this.master);
     if (!c || !output) return;
     const now = c.currentTime + delay, oscillator = c.createOscillator(), gain = c.createGain(), stereo = c.createStereoPanner();
     oscillator.type = type; oscillator.frequency.setValueAtTime(frequency, now); oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, endFrequency), now + duration);
@@ -79,7 +88,7 @@ export class Soundscape {
     oscillator.start(now); oscillator.stop(now + duration + .03);
   }
 
-  private burst(duration: number, amplitude: number, frequency: number, pan = 0, rate = 1, delay = 0, airy = false, echo = false) {
+  private burst(duration: number, amplitude: number, frequency: number, pan = 0, rate = 1, delay = 0, airy = false, echo = false, output?: AudioNode) {
     const c = this.context;
     if (!c || !this.world || !this.noise || !this.white) return;
     const source = c.createBufferSource(), filter = c.createBiquadFilter(), level = c.createGain(), stereo = c.createStereoPanner();
@@ -87,7 +96,7 @@ export class Soundscape {
     filter.type = airy ? 'bandpass' : 'lowpass'; filter.frequency.value = frequency; filter.Q.value = airy ? .8 : .7;
     const now = c.currentTime + delay;
     level.gain.setValueAtTime(0, now); level.gain.linearRampToValueAtTime(amplitude, now + Math.min(.04, duration * .22)); level.gain.exponentialRampToValueAtTime(.0001, now + duration);
-    stereo.pan.value = Math.max(-1, Math.min(1, pan)); source.connect(filter).connect(level).connect(stereo).connect(this.world);
+    stereo.pan.value = Math.max(-1, Math.min(1, pan)); source.connect(filter).connect(level).connect(stereo).connect(output ?? this.world);
     if (echo && this.reverb) stereo.connect(this.reverb);
     source.onended = () => { source.disconnect(); filter.disconnect(); level.disconnect(); stereo.disconnect(); };
     source.start(now, Math.random() * .8); source.stop(now + duration + .03);
@@ -170,6 +179,108 @@ export class Soundscape {
     this.setActive(false);
     if (won) this.tone(220, 3, .07, 'sine', 440);
     else { this.tone(57, 1.2, .105, 'sawtooth', 22); this.tone(290, .4, .035, 'triangle', 80); }
+  }
+  // ---- Found-footage prologue -------------------------------------------------------------
+
+  /** Decode a bundled local dialogue clip once; failures fall back to subtitles only. */
+  loadClip(url: string) {
+    let clip = this.clips.get(url);
+    if (!clip) {
+      clip = (async () => {
+        try {
+          if (!this.context) this.create();
+          const response = await fetch(url); if (!response.ok) return undefined;
+          return await this.context!.decodeAudioData(await response.arrayBuffer());
+        } catch { return undefined; }
+      })();
+      this.clips.set(url, clip);
+    }
+    return clip;
+  }
+  /** Play decoded dialogue on the prologue bus; returns the clip length in seconds (0 if unavailable). */
+  playClip(buffer: AudioBuffer | undefined, gain = 1, pan = 0, delay = 0) {
+    const c = this.context;
+    if (!c || !this.voice || !buffer) return 0;
+    const source = c.createBufferSource(), level = c.createGain(), stereo = c.createStereoPanner();
+    source.buffer = buffer; level.gain.value = gain; stereo.pan.value = pan;
+    source.connect(level).connect(stereo).connect(this.voice);
+    this.voices.add(source);
+    source.onended = () => { this.voices.delete(source); source.disconnect(); level.disconnect(); stereo.disconnect(); };
+    source.start(c.currentTime + delay);
+    return buffer.duration;
+  }
+  /** Sweep the dialogue low-pass: 1 = clear street air, 0 = heard through a floor. */
+  muffleVoices(clarity: number, seconds = .4) {
+    if (!this.context || !this.voice) return;
+    this.voice.frequency.setTargetAtTime(260 + Math.pow(Math.max(0, Math.min(1, clarity)), 2) * 17700, this.context.currentTime, seconds / 3);
+  }
+  /** Warm-evening suburban air: wind in the trees, distant traffic rumble. Birds are scheduled by outdoorTick. */
+  startOutdoor() {
+    const c = this.context;
+    if (!c || !this.intro || !this.noise || this.outdoorSources.length) return;
+    this.intro.gain.cancelScheduledValues(c.currentTime); this.intro.gain.setValueAtTime(1, c.currentTime);
+    this.muffleVoices(1, .05);
+    const wind = c.createBufferSource(); wind.buffer = this.noise; wind.loop = true; wind.playbackRate.value = .6;
+    const windFilter = c.createBiquadFilter(); windFilter.type = 'bandpass'; windFilter.frequency.value = 520; windFilter.Q.value = .45;
+    const windGain = c.createGain(); windGain.gain.value = .07;
+    const gust = c.createOscillator(), gustDepth = c.createGain(); gust.frequency.value = .09; gustDepth.gain.value = .045;
+    gust.connect(gustDepth).connect(windGain.gain);
+    wind.connect(windFilter).connect(windGain).connect(this.voice!);
+    const traffic = c.createBufferSource(); traffic.buffer = this.noise; traffic.loop = true; traffic.playbackRate.value = .35;
+    const trafficFilter = c.createBiquadFilter(); trafficFilter.type = 'lowpass'; trafficFilter.frequency.value = 160;
+    const trafficGain = c.createGain(); trafficGain.gain.value = .05;
+    traffic.connect(trafficFilter).connect(trafficGain).connect(this.voice!);
+    for (const source of [wind, gust, traffic]) source.start();
+    this.outdoorSources = [wind, gust, traffic]; this.outdoorNodes = [windFilter, windGain, gustDepth, trafficFilter, trafficGain];
+  }
+  private birdTime = .4;
+  private carTime = 9;
+  outdoorTick(dt: number) {
+    if (!this.context || !this.outdoorSources.length) return;
+    this.birdTime -= dt; this.carTime -= dt;
+    if (this.birdTime <= 0) {
+      this.birdTime = .7 + Math.random() * 2.6;
+      const pan = Math.random() * 1.6 - .8, base = 2600 + Math.random() * 1700, chirps = 2 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < chirps; i++) this.tone(base, .07 + Math.random() * .05, .011, 'sine', base * (1.25 + Math.random() * .4), i * (.09 + Math.random() * .06), pan, false, this.voice);
+    }
+    if (this.carTime <= 0) {
+      // A car passing a block away: a long filtered swell, panned across.
+      this.carTime = 14 + Math.random() * 10;
+      this.burst(4.5, .09, 380, Math.random() > .5 ? .6 : -.6, .5, 0, false, false, this.voice);
+    }
+  }
+  /** Scuff of sneakers on dry asphalt. */
+  streetStep() {
+    const pan = ++this.step % 2 ? -.12 : .12;
+    this.burst(.14, .1, 1500, pan, 1 + Math.random() * .3, 0, true, false, this.intro);
+    this.tone(90, .09, .02, 'sine', 50, 0, pan, false, this.intro);
+  }
+  /** Heel catching the kerb, then the tape mechanism shrieking as reality gives way. */
+  noclip() {
+    const c = this.context;
+    if (!c || !this.intro) return;
+    this.burst(.18, .3, 900, 0, .9, 0, false, false, this.intro);
+    this.tone(70, .25, .08, 'sine', 40, 0, 0, false, this.intro);
+    this.burst(1.6, .22, 2400, 0, 1.4, .35, true, false, this.intro);
+    this.tone(1900, 1.4, .03, 'sawtooth', 120, .4, 0, false, this.intro);
+    this.tone(55, 1.6, .05, 'square', 30, .45, 0, false, this.intro);
+    this.muffleVoices(.15, 1.1);
+  }
+  /** Body hitting damp carpet in silence. */
+  landing() {
+    this.tone(48, .55, .14, 'sine', 26); this.burst(.35, .25, 300, 0, .7);
+    this.tone(120, .12, .04, 'triangle', 60, .05);
+  }
+  /** Fade and stop every prologue sound (also used when the player skips). */
+  stopIntro(seconds = .35) {
+    const c = this.context;
+    if (!c || !this.intro) return;
+    const now = c.currentTime;
+    this.intro.gain.cancelScheduledValues(now); this.intro.gain.setValueAtTime(this.intro.gain.value, now); this.intro.gain.linearRampToValueAtTime(0, now + seconds);
+    for (const source of this.outdoorSources) try { source.stop(now + seconds + .05); } catch { /* already stopped */ }
+    for (const voice of this.voices) try { voice.stop(now + seconds + .05); } catch { /* already stopped */ }
+    const nodes = this.outdoorNodes; this.outdoorSources = []; this.outdoorNodes = [];
+    window.setTimeout(() => nodes.forEach(node => node.disconnect()), (seconds + .2) * 1000);
   }
   dispose() { void this.context?.close(); this.context = undefined; }
 }

@@ -4,7 +4,7 @@ test('Russian menus, settings persistence, keyboard controls, pause and return',
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
-    if (!localStorage.getItem('backrooms-settings')) localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true }));
+    if (!localStorage.getItem('backrooms-settings')) localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true, intro: false }));
   });
   await page.goto('/');
   await expect(page.locator('#boot')).toHaveCount(0);
@@ -113,6 +113,12 @@ test('mobile layout has no clipped start button and provides working touch contr
   expect(box).not.toBeNull();
   expect(box!.y + box!.height).toBeLessThan(700);
   await start.tap();
+  // Phones get the prologue too: the skip control must fit and respond to a tap.
+  await expect(page.locator('body')).toHaveAttribute('data-state', 'intro');
+  const skip = page.getByRole('button', { name: /ПРОПУСТИТЬ/ });
+  const skipBox = await skip.boundingBox();
+  expect(skipBox!.x).toBeGreaterThanOrEqual(0); expect(skipBox!.x + skipBox!.width).toBeLessThanOrEqual(390);
+  await skip.tap();
   await expect(page.locator('#touch-controls')).toBeVisible();
   await page.locator('#touch-light').tap();
   await expect(page.locator('#flashlight-text')).toHaveText('ФОНАРЬ ВЫКЛ.');

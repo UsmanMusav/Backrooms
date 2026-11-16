@@ -26,6 +26,10 @@ test('settings sanitize stored values and clamp controls', () => {
   assert.equal(result.muted, DEFAULT_SETTINGS.muted);
   assert.equal(result.grain, false);
   assert.equal(result.headBob, false);
+  assert.equal(result.intro, true, 'a missing prologue flag defaults to showing the tape');
+  stored = JSON.stringify({ intro: false, camcorder: 'no' });
+  assert.equal(loadSettings().intro, false);
+  assert.equal(loadSettings().camcorder, DEFAULT_SETTINGS.camcorder);
 });
 
 test('settings round-trip locally', () => {

@@ -164,3 +164,56 @@ export function createViewArm() {
   const anchor = hand.getWorldPosition(new THREE.Vector3()); asset.model.position.sub(anchor).add(new THREE.Vector3(0, -.025, .045));
   return { root, mixer, dispose: () => { mixer.stopAllAction(); mixer.uncacheRoot(asset.model); body?.geometry.dispose(); asset.skeletons.forEach(s => s.dispose()); asset.materials.forEach(m => m.dispose()); } };
 }
+
+/**
+ * Non-player cast for the found-footage prologue: the same weighted skinned mesh and clip library
+ * as the explorers, without expedition gear, torch or name tag, tinted as everyday clothes.
+ */
+export class CastMember {
+  readonly group = new THREE.Group();
+  readonly model: THREE.Object3D;
+  readonly mixer: THREE.AnimationMixer;
+  readonly head?: THREE.Bone;
+  private actions = new Map<string, THREE.AnimationAction>();
+  private materials: THREE.MeshStandardMaterial[];
+  private skeletons: Set<THREE.Skeleton>;
+  private active?: THREE.AnimationAction;
+
+  constructor(tint: number, name: string) {
+    const asset = rig(false); this.model = asset.model; this.materials = asset.materials; this.skeletons = asset.skeletons;
+    this.group.name = name; this.group.add(this.model); this.mixer = new THREE.AnimationMixer(this.model);
+    for (const material of this.materials) if (material.map === textures.albedo) material.color.setHex(tint);
+    for (const clip of template!.animations) {
+      const action = this.mixer.clipAction(clip); this.actions.set(clip.name, action);
+      if (['reveal', 'death', 'attack', 'interact'].includes(clip.name)) { action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true; }
+    }
+    let head: THREE.Bone | undefined;
+    this.model.traverse(o => { if (o instanceof THREE.Bone && o.name === 'Head') head = o; });
+    this.head = head;
+    this.play('idle', 0);
+  }
+
+  play(name: string, fade = .3, timeScale = 1) {
+    const next = this.actions.get(name);
+    if (!next) return;
+    next.setEffectiveTimeScale(timeScale);
+    if (this.active === next) return;
+    next.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1).play();
+    if (this.active && fade > 0) next.crossFadeFrom(this.active, fade, false); else this.active?.stop();
+    this.active = next;
+  }
+
+  /** Attach a prop to the head bone, positioned in the rig's own (+Z forward) space. */
+  wear(prop: THREE.Object3D, x: number, y: number, z: number) {
+    this.mixer.update(0); this.model.add(prop); prop.position.set(x, y, z);
+    this.group.updateMatrixWorld(true); this.head?.attach(prop);
+  }
+
+  update(dt: number) { this.mixer.update(Math.max(0, dt)); }
+
+  dispose() {
+    this.mixer.stopAllAction(); this.mixer.uncacheRoot(this.model);
+    this.skeletons.forEach(s => s.dispose()); this.materials.forEach(m => m.dispose());
+    this.group.removeFromParent();
+  }
+}

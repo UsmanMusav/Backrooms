@@ -56,7 +56,7 @@ test('textured surfaces use several variants and props are detailed models, not 
 
 test('real HUD shows the camcorder viewfinder and the setting removes it', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 640 });
-  await page.addInitScript(() => localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true, camcorder: sessionStorage.getItem('camoff') !== '1' })));
+  await page.addInitScript(() => localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true, intro: false, camcorder: sessionStorage.getItem('camoff') !== '1' })));
   await page.goto('/');
   await expect(page.locator('#boot')).toHaveCount(0);
   await page.getByRole('button', { name: 'ВОЙТИ В ЗАКУЛИСЬЕ', exact: true }).click();
@@ -79,7 +79,7 @@ test('touch zoom button cycles optical zoom and fits a 390 px phone', async ({ b
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
   const page = await context.newPage();
   try {
-    await page.addInitScript(() => localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true })));
+    await page.addInitScript(() => localStorage.setItem('backrooms-settings', JSON.stringify({ quality: 'low', muted: true, intro: false })));
     await page.goto('/'); await expect(page.locator('#boot')).toHaveCount(0);
     await page.getByRole('button', { name: 'ВОЙТИ В ЗАКУЛИСЬЕ', exact: true }).tap();
     const zoom = page.locator('#touch-zoom'); await expect(zoom).toBeVisible();

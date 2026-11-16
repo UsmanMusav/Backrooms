@@ -17,9 +17,11 @@ import { TensionDirector, FIELD_NOTES } from './tension';
 import { enrichEnvironment } from './environment';
 import { wallpaperTexture, carpetTexture, ceilingTexture, stainTexture, surfaceMaps, addMacroVariation, WALL_VARIANT_WEIGHTS, CARPET_VARIANT_WEIGHTS, CEILING_VARIANT_WEIGHTS } from './textures';
 import { Soundscape } from './audio';
+import { FoundFootageIntro } from './intro';
+import type { IntroFrame } from './intro';
 import type { Settings } from './settings';
 
-export type GameState = 'menu' | 'playing' | 'paused' | 'dead' | 'won';
+export type GameState = 'menu' | 'intro' | 'playing' | 'paused' | 'dead' | 'won';
 export type Snapshot = {
   elapsed: number;
   fuses: number;
@@ -41,6 +43,7 @@ type Callbacks = {
   onState: (state: GameState) => void;
   onUpdate: (snapshot: Snapshot) => void;
   onMessage: (text: string, title?: string) => void;
+  onIntro?: (frame: IntroFrame) => void;
 };
 
 /**
@@ -55,6 +58,8 @@ const FilmShader = {
     danger: { value: 0 },
     camcorder: { value: 1 },
     focus: { value: 0 },
+    glitch: { value: 0 },
+    blackout: { value: 0 },
     resolution: { value: new THREE.Vector2(1920, 1080) },
   },
   vertexShader: `varying vec2 vUv;
@@ -66,6 +71,8 @@ const FilmShader = {
     uniform float danger;
     uniform float camcorder;
     uniform float focus;
+    uniform float glitch;
+    uniform float blackout;
     uniform vec2 resolution;
     varying vec2 vUv;
     float random(vec2 p) { return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
@@ -87,6 +94,11 @@ const FilmShader = {
       float inBand = smoothstep(0.03, 0.0, abs(uv.y - band)) * (0.08 + roll * 0.55 + danger * 1.4);
       float headSwitch = smoothstep(0.022, 0.0, uv.y);
       float jitter = (random(vec2(line, floor(time * 30.0))) - 0.5) * 0.0011;
+      // Reality slipping: block tearing and vertical hop while the tape loses lock.
+      float block = floor(uv.y * 24.0 + floor(time * 18.0) * 7.0);
+      float tear = step(1.0 - glitch * 0.8, random(vec2(block, floor(time * 24.0))));
+      uv.x += glitch * tear * (random(vec2(block, time)) - 0.5) * 0.25;
+      uv.y += glitch * glitch * (random(vec2(floor(time * 12.0), 3.0)) - 0.5) * 0.06;
       uv.x += camcorder * (jitter + inBand * (random(vec2(line, time)) - 0.5) * 0.02 + headSwitch * 0.008 * sin(time * 40.0 + uv.y * 300.0) + sin(uv.y * 9.0 + time * 1.3) * 0.0006);
       float shift = (0.00055 + danger * 0.003) * dot(p,p) + camcorder * 0.0011;
       vec3 color = sampleLens(uv, shift);
@@ -118,6 +130,12 @@ const FilmShader = {
       color *= 0.994 + sin(uv.y * resolution.y * 1.7) * 0.006;
       color *= 1.0 - camcorder * 0.07 * step(0.5, fract(gl_FragCoord.y * 0.5));
       color = mix(color, vec3(noise + 0.32), danger * 0.035);
+      if (glitch > 0.001) {
+        float snow = random(floor(vUv * resolution * 0.5) + fract(time * 7.0) * 311.0);
+        color = mix(color, vec3(dot(color, vec3(0.333))), glitch * 0.5);
+        color = mix(color, vec3(snow * 0.9), glitch * 0.55 * (0.35 + 0.65 * tear));
+      }
+      color *= 1.0 - blackout;
       gl_FragColor = vec4(color,1.0);
     }`,
 };
@@ -202,6 +220,10 @@ export class BackroomsGame {
   private menuAnimated = true;
   private lastBackgroundRender = -1;
   private resizeObserver: ResizeObserver;
+  private renderPass: RenderPass;
+  private intro?: FoundFootageIntro;
+  private introWakeStarted = false;
+  private introWarm = false;
 
   constructor(container: HTMLElement, settings: Settings, callbacks: Callbacks) {
     this.settings = settings;
@@ -221,7 +243,8 @@ export class BackroomsGame {
     this.scene.add(this.camera);
 
     this.composer = new EffectComposer(this.renderer);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(this.renderPass);
     const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 768), 0.23, 0.7, 1.05);
     this.composer.addPass(bloom);
     this.film = new ShaderPass(FilmShader);
@@ -490,7 +513,7 @@ export class BackroomsGame {
   }
 
   private updateFlashlight(dt: number) {
-    if (this.state === 'menu' || this.state === 'dead' || this.state === 'won') return;
+    if (this.state === 'menu' || this.state === 'intro' || this.state === 'dead' || this.state === 'won') return;
     // Continue the draw/holster transition while paused, without moving the player.
     if (this.state === 'paused') this.motionPose = this.motion.update(dt, false, false, 0, false, this.flashOn);
     const p = this.motionPose, lower = 1 - p.draw;
@@ -517,6 +540,11 @@ export class BackroomsGame {
 
   private bindInput() {
     window.addEventListener('keydown', event => {
+      if (this.state === 'intro') {
+        if (['Space', 'Enter', 'NumpadEnter', 'Escape'].includes(event.code)) { event.preventDefault(); this.skipIntro(); }
+        if (event.code === 'KeyS' || event.code === 'ArrowDown') { event.preventDefault(); this.intro?.setBackInput(true); }
+        return;
+      }
       if (this.state !== 'playing' || this.chatFocused || (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]'))) return;
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].includes(event.code)) event.preventDefault();
       this.keys.add(event.code);
@@ -527,7 +555,10 @@ export class BackroomsGame {
       if (event.code === 'KeyC') this.zoomFocus = Math.max(this.zoomFocus, .5);
       if (event.code === 'Escape' || event.code === 'KeyP') this.pause();
     });
-    window.addEventListener('keyup', event => this.keys.delete(event.code));
+    window.addEventListener('keyup', event => {
+      this.keys.delete(event.code);
+      if (event.code === 'KeyS' || event.code === 'ArrowDown') this.intro?.setBackInput(false);
+    });
     // Hold C and roll the wheel for optical zoom; the wheel alone never scrolls the page in-game.
     window.addEventListener('wheel', event => {
       if (this.state !== 'playing' || this.chatFocused || !this.zoomHeld()) return;
@@ -543,6 +574,11 @@ export class BackroomsGame {
       this.hadPointerLock = locked;
     });
     document.addEventListener('mousemove', event => {
+      if (this.state === 'intro' && (document.pointerLockElement === this.renderer.domElement || this.dragLook)) {
+        if (this.skipMouseMoves > 0) { this.skipMouseMoves--; return; }
+        if (Math.abs(event.movementX) < 180 && Math.abs(event.movementY) < 180) this.intro?.look(event.movementX, event.movementY);
+        return;
+      }
       if (this.state !== 'playing' || this.chatFocused || (document.pointerLockElement !== this.renderer.domElement && !this.dragLook)) return;
       // Some browsers report the cursor warp into pointer lock as a huge relative
       // movement. It must not fling the player toward the floor or ceiling.
@@ -551,7 +587,7 @@ export class BackroomsGame {
       this.look(event.movementX, event.movementY);
     });
     this.renderer.domElement.addEventListener('mousedown', event => {
-      if (this.state === 'playing' && event.button === 0) {
+      if ((this.state === 'playing' || this.state === 'intro') && event.button === 0) {
         this.dragLook = true;
         if (!document.pointerLockElement) this.capturePointer();
       }
@@ -561,7 +597,7 @@ export class BackroomsGame {
   }
 
   async capturePointer() {
-    if (this.isTouch || this.state !== 'playing') return;
+    if (this.isTouch || (this.state !== 'playing' && this.state !== 'intro')) return;
     try {
       if (document.pointerLockElement !== this.renderer.domElement) await this.renderer.domElement.requestPointerLock();
     } catch {
@@ -592,7 +628,57 @@ export class BackroomsGame {
   }
   setVirtualSprint(active: boolean) { this.virtualSprint = active; }
 
+  /** Found-footage prologue on a sunny street, ending face-down on Level 0 carpet. Solo only. */
+  playIntro() {
+    this.endIntro();
+    this.intro = new FoundFootageIntro(this.renderer, this.audio, this.isTouch, this.settings.quality === 'high' ? 2048 : 1024);
+    this.intro.resize(this.camera.aspect);
+    // Compile the street shaders now, behind the black title card, not on the first visible frame.
+    this.renderer.compile(this.intro.scene, this.intro.camera);
+    this.introWakeStarted = false; this.introWarm = false;
+    this.flashlight.visible = false; this.flashlightModel.visible = false; this.entity.visible = false;
+    this.film.uniforms.camcorder.value = 1;
+    this.setState('intro');
+    void this.audio.unlock().then(() => this.audio.setActive(false));
+  }
+  skipIntro() { this.intro?.skip(); }
+  setIntroBack(held: boolean) { this.intro?.setBackInput(held); }
+  private endIntro() {
+    if (!this.intro) return;
+    this.intro.dispose(); this.intro = undefined;
+    this.renderPass.scene = this.scene; this.renderPass.camera = this.camera;
+    this.film.uniforms.glitch.value = 0; this.film.uniforms.blackout.value = 0;
+    this.film.uniforms.camcorder.value = this.settings.camcorder ? 1 : 0;
+  }
+  private updateIntro(dt: number) {
+    const intro = this.intro;
+    if (!intro) { this.start(); return; }
+    const frame = intro.update(dt);
+    this.callbacks.onIntro?.(frame);
+    if (frame.phase === 'done') { this.endIntro(); this.start(); return; }
+    this.film.uniforms.glitch.value = frame.glitch;
+    this.film.uniforms.blackout.value = frame.blackout;
+    if (frame.phase === 'wake') {
+      if (!this.introWakeStarted) { this.introWakeStarted = true; this.audio.setActive(true); }
+      this.audio.updateMotion(dt, .3, false);
+      // Lying on the damp carpet, then the camera is picked up and steadied at eye level.
+      const t = frame.t, lift = Math.max(0, Math.min(1, (t - 2.7) / 2.4)), ease = lift * lift * (3 - 2 * lift);
+      const shake = (1 - ease) * lift * .05, settle = Math.max(0, 1 - (t - 5.1) / 1.6);
+      const x = SPAWN.x * CELL + .35 * (1 - ease), z = SPAWN.z * CELL - .25 * (1 - ease);
+      this.camera.position.set(x, .17 + (1.63 - .17) * ease + Math.sin(t * 9) * shake, z);
+      const yaw = -2.65 + (1 - ease) * .62 + Math.sin(t * 6.3) * shake;
+      const pitch = (1 - ease) * -.16 + Math.sin(t * 1.4) * .012 * settle;
+      const roll = (1 - ease) * 1.38 + Math.sin(t * 7.1) * shake + Math.sin(t * 1.1) * .01 * settle;
+      this.camera.rotation.set(pitch, yaw, roll, 'YXZ');
+      if (this.camera.fov !== 72) { this.camera.fov = 72; this.camera.updateProjectionMatrix(); }
+      this.renderPass.scene = this.scene; this.renderPass.camera = this.camera;
+    } else {
+      this.renderPass.scene = intro.scene; this.renderPass.camera = intro.camera;
+    }
+  }
+
   start() {
+    this.endIntro();
     this.elapsed = 0;
     this.fuses = 0;
     this.powered = false;
@@ -645,6 +731,7 @@ export class BackroomsGame {
   }
 
   menu() {
+    this.endIntro();
     this.setState('menu'); this.menuAnimated = true;
     if (document.pointerLockElement) document.exitPointerLock();
     this.audio.setActive(false);
@@ -786,6 +873,7 @@ export class BackroomsGame {
     this.composer.setSize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.intro?.resize(width / height);
     this.film.uniforms.resolution.value.set(width * scale, height * scale);
     this.needsRender = true;
   }
@@ -1025,6 +1113,9 @@ export class BackroomsGame {
       this.camera.position.x += Math.sin(this.time * 0.14) * 0.075;
       this.camera.position.y += Math.sin(this.time * 0.23) * 0.014;
       this.camera.lookAt(this.menuLookAt.x + Math.sin(this.time * 0.1) * 0.14, this.menuLookAt.y, this.menuLookAt.z);
+    } else if (this.state === 'intro') {
+      this.updateIntro(dt);
+      if (this.state !== 'intro') { this.animationId = requestAnimationFrame(this.frame); return; }
     } else if (this.state === 'playing') {
       if (!this.coop) this.elapsed += dt;
       moving = this.updatePlayer(dt);
@@ -1037,7 +1128,10 @@ export class BackroomsGame {
       if (tension.event) this.audio.atmosphere(tension.event, tension.pan);
     }
     const animateMenu = this.state === 'menu' && this.menuAnimated && this.time - this.lastBackgroundRender > 1 / 24;
-    if (animateMenu || this.state === 'playing' || this.needsRender || (this.coop && this.state === 'paused')) {
+    // Behind the black title card only one warm-up frame is drawn (it compiles shadow/street programs).
+    const introDark = this.state === 'intro' && this.film.uniforms.blackout.value >= .999 && this.introWarm;
+    if (this.state === 'intro' && !introDark) this.introWarm = true;
+    if (animateMenu || this.state === 'playing' || (this.state === 'intro' && !introDark) || this.needsRender || (this.coop && this.state === 'paused')) {
       if (this.state === 'menu') this.lastBackgroundRender = this.time;
       this.dust.position.y = Math.sin(this.time * 0.08) * 0.035;
       this.updateLights();

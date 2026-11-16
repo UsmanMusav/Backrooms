@@ -71,6 +71,7 @@ for (const font of ['manrope', 'oswald', 'ibm-plex-mono']) {
 notices.push('\n=== Quaternius / CC0 animated explorer and Universal Animation Library ===\n' + readFileSync(resolve('public/models/CREDITS.md'), 'utf8'));
 notices.push(readFileSync(resolve('public/models/Quaternius-Standard-License.txt'), 'utf8'));
 notices.push(readFileSync(resolve('public/models/CC0-1.0.txt'), 'utf8'));
+notices.push('\n=== Prologue dialogue (synthesized for this game) ===\n' + readFileSync(resolve('public/audio/intro/CREDITS.md'), 'utf8'));
 const nodeLicense = resolve('desktop/licenses/Node-v24.22.3-LICENSE.txt');
 notices.push('\n=== Node.js ===\n' + readFileSync(nodeLicense, 'utf8'));
 writeFileSync(join(stage, 'THIRD_PARTY_NOTICES.txt'), notices.join('\n'));

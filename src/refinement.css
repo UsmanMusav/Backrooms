@@ -69,3 +69,46 @@ body.camcorder-off .hud-record { opacity: .9; }
   .cam-zoom { top: 92px; font-size: 10px; }
   .cam-zoom-track { width: 90px; }
 }
+
+/* ---- Found-footage prologue ---------------------------------------------------------------- */
+.chapter-intro.after-tape { background: transparent; text-shadow: 0 0 18px rgba(0,0,0,.8); }
+.intro-overlay { position: fixed; inset: 0; z-index: 7; pointer-events: none; color: #f2f0e6; font-family: var(--mono); }
+.intro-overlay[hidden] { display: none; }
+.intro-card { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 0 12vw; text-align: center; background: #000; opacity: 0; transition: opacity .6s; }
+.intro-card small { font-size: 10px; letter-spacing: .3em; color: #8d907d; margin-bottom: 14px; }
+.intro-card p { margin: 0; max-width: 620px; font-size: 15px; line-height: 1.7; letter-spacing: .04em; color: #dcdccf; }
+.intro-overlay[data-phase="card"] .intro-card { opacity: 1; }
+.intro-play { position: absolute; inset: 0; display: none; background: #1a2fb4; padding: 34px 44px; font-size: 26px; letter-spacing: .12em; text-shadow: 2px 2px 0 rgba(0,0,0,.35); }
+.intro-play span { position: absolute; right: 44px; top: 34px; }
+.intro-overlay[data-phase="play"] .intro-play { display: block; animation: intro-play-out 1.4s steps(1) forwards; }
+@keyframes intro-play-out { 0% { opacity: 1; } 55% { opacity: 1; } 56% { opacity: 0; } 100% { opacity: 0; } }
+.intro-viewfinder { position: absolute; inset: 0; opacity: 0; text-shadow: 1px 1px 0 rgba(0,0,0,.55), 0 0 6px rgba(0,0,0,.35); }
+.intro-overlay:is([data-phase="play"], [data-phase="take"], [data-phase="backup"], [data-phase="fall"], [data-phase="wake"]) .intro-viewfinder { opacity: 1; }
+.intro-rec { position: absolute; left: 44px; top: 34px; display: flex; align-items: center; gap: 9px; font-size: 22px; letter-spacing: .1em; }
+.intro-rec i { width: 13px; height: 13px; border-radius: 50%; background: #e2311f; box-shadow: 0 0 8px rgba(226,49,31,.7); animation: intro-blink 1s steps(1) infinite; }
+@keyframes intro-blink { 50% { opacity: 0; } }
+.intro-sp { position: absolute; right: 44px; top: 34px; font-size: 20px; letter-spacing: .12em; }
+.intro-stamp { position: absolute; right: 44px; bottom: 38px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 22px; letter-spacing: .08em; }
+.intro-subtitle { position: absolute; left: 50%; bottom: 13%; width: min(760px, 86vw); margin: 0; transform: translateX(-50%); text-align: center; font: 600 19px/1.45 'Manrope', sans-serif; color: #fffef4; text-shadow: 0 1px 2px #000, 0 0 10px rgba(0,0,0,.85); opacity: 0; transition: opacity .2s; }
+.intro-subtitle b { color: #e6d58f; font-weight: 600; letter-spacing: .04em; }
+.intro-subtitle.visible { opacity: 1; }
+.intro-prompt { position: absolute; left: 50%; bottom: 23%; margin: 0; transform: translateX(-50%); padding: 9px 16px; border: 1px solid rgba(242,240,230,.5); background: rgba(10,12,8,.45); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; opacity: 0; transition: opacity .3s; white-space: nowrap; }
+.intro-prompt.visible { opacity: 1; animation: intro-pulse 1.6s ease-in-out infinite; }
+@keyframes intro-pulse { 50% { border-color: rgba(242,240,230,.15); } }
+.intro-skip, .intro-back { pointer-events: auto; position: absolute; border: 1px solid rgba(242,240,230,.35); background: rgba(8,10,7,.42); color: #e9e7da; font: 11px var(--mono); letter-spacing: .18em; cursor: pointer; }
+.intro-skip { right: 44px; bottom: 120px; display: flex; align-items: center; gap: 10px; padding: 9px 13px; opacity: .72; }
+.intro-skip:hover, .intro-skip:focus-visible { opacity: 1; border-color: #e9e7da; }
+.intro-skip kbd { font: 9px var(--mono); padding: 2px 5px; border: 1px solid rgba(242,240,230,.4); }
+.intro-overlay[data-phase="card"] .intro-skip { bottom: 40px; }
+.intro-back { left: 50%; bottom: 7%; transform: translateX(-50%); width: 132px; height: 56px; border-radius: 28px; font-size: 13px; }
+.intro-back.active { background: rgba(242,240,230,.25); }
+.intro-overlay:not([data-phase="backup"]) .intro-back { display: none; }
+@media (max-width: 720px) {
+  .intro-rec, .intro-sp { top: 22px; font-size: 16px; } .intro-rec { left: 22px; } .intro-sp { right: 22px; }
+  .intro-stamp { right: 22px; bottom: 26px; font-size: 15px; }
+  .intro-skip { right: 22px; top: 56px; bottom: auto; }
+  .intro-overlay[data-phase="card"] .intro-skip { top: auto; bottom: 30px; }
+  .intro-card p { font-size: 13px; }
+  .intro-subtitle { font-size: 16px; bottom: 19%; }
+  .intro-prompt { bottom: 28%; font-size: 10px; }
+}

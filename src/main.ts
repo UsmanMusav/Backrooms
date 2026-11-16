@@ -7,6 +7,7 @@ import { CoopUI } from './coop-ui';
 import './native';
 import { BackroomsGame, MIN_ZOOM, MAX_ZOOM } from './game';
 import type { GameState, Snapshot } from './game';
+import type { IntroFrame } from './intro';
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './settings';
 
 const paths: Record<string, string> = {
@@ -66,6 +67,16 @@ app.innerHTML = `
     <div class="touch-actions"><button class="touch-button" id="touch-sprint" aria-label="Бег">${icon('run')}</button><button class="touch-button" id="touch-light" aria-label="Фонарик">${icon('flashlight')}</button><button class="touch-button zoom-button" id="touch-zoom" aria-label="Зум камеры" aria-pressed="false">1×</button><button class="touch-button interact-button" id="touch-interact" aria-label="Взаимодействовать">${icon('hand')}</button></div>
     <button class="touch-hint" id="touch-hint" aria-label="Показать ориентир">H</button>
   </div>
+  <section id="intro-overlay" class="intro-overlay" aria-label="Вступительная запись" hidden>
+    <div class="intro-card" id="intro-card"><small>NOCLIP ARCHIVE · КАССЕТА 001</small><p>Кассета обнаружена в 1998 году на газоне жилого дома, в трёх километрах от места съёмки.</p><p>Изображение и звук восстановлены. Монтаж не производился.</p></div>
+    <div class="intro-play" id="intro-play"><b>PLAY ▶</b><span>SP</span></div>
+    <div class="intro-viewfinder" id="intro-viewfinder"><span class="intro-rec"><i></i>REC</span><span class="intro-sp">SP</span>
+      <div class="intro-stamp"><span id="intro-date">ИЮЛ. 4 1991</span><span id="intro-clock">PM 6:47:12</span></div></div>
+    <p class="intro-subtitle" id="intro-subtitle" aria-live="polite"></p>
+    <p class="intro-prompt" id="intro-prompt"></p>
+    <button class="intro-back" id="intro-back" hidden>НАЗАД</button>
+    <button class="intro-skip" id="intro-skip">ПРОПУСТИТЬ <kbd>ПРОБЕЛ</kbd></button>
+  </section>
   <div id="notification" role="status" aria-live="polite"><div class="notification-inner"><small id="notification-title"></small><p id="notification-text"></p></div></div>
   <dialog class="dialog" id="dialog" aria-labelledby="dialog-title"></dialog>
   <div id="boot"><div class="boot-content">${icon('logo')}<p>ВОССТАНОВЛЕНИЕ ЗАПИСИ</p><div class="boot-track"></div><small>NOCLIP ARCHIVE / TAPE 001</small></div></div>
@@ -114,19 +125,30 @@ function beginGame() {
   else game.leaveCoop();
   closeModal();
   game.audio.click();
+  if (settings.intro) { game.playIntro(); void game.capturePointer(); return; }
   game.start();
   void game.capturePointer();
+  showChapter();
+}
+
+function showChapter(afterTape = false) {
   document.querySelector('.chapter-intro')?.remove();
   const intro = document.createElement('div');
-  intro.className = 'chapter-intro';
+  intro.className = afterTape ? 'chapter-intro after-tape' : 'chapter-intro';
   intro.innerHTML = '<small>NOCLIP ARCHIVE / ЗАПИСЬ 001</small><strong>УРОВЕНЬ 0</strong><span>Бесконечные офисы</span>';
   app.appendChild(intro);
   clearTimeout(introTimeout);
   introTimeout = window.setTimeout(() => intro.remove(), 3100);
 }
 
+let previousState: GameState = 'menu';
 function onState(state: GameState) {
   document.body.dataset.state = state;
+  const overlay = $('#intro-overlay');
+  overlay.hidden = state !== 'intro';
+  if (state === 'intro') { lastIntro = ''; $('#intro-back').hidden = !game?.isTouch; }
+  if (previousState === 'intro' && state === 'playing') showChapter(true);
+  previousState = state;
   hud.hidden = state !== 'playing';
   hud.dispatchEvent(new Event('zoomreset'));
   touchControls.hidden = state !== 'playing' || !game?.isTouch;
@@ -134,7 +156,7 @@ function onState(state: GameState) {
   if (dialog.open) closeModal();
   coopUI?.onGameState(state);
   if (state === 'menu') renderMenu();
-  else if (state === 'playing') screen.innerHTML = '';
+  else if (state === 'playing' || state === 'intro') screen.innerHTML = '';
   else renderState(state);
 }
 
@@ -201,6 +223,25 @@ function onUpdate(snapshot: Snapshot) {
   }
 }
 
+let lastIntro = '';
+const SCRAMBLE = '0123456789:.-/#?';
+function scramble(text: string) { return [...text].map(c => c === ' ' ? ' ' : Math.random() < .55 ? SCRAMBLE[Math.floor(Math.random() * SCRAMBLE.length)] : c).join(''); }
+/** Mirror the prologue timeline into the DOM viewfinder, subtitles and prompts. */
+function onIntro(frame: IntroFrame) {
+  const overlay = $('#intro-overlay');
+  overlay.dataset.phase = frame.phase;
+  $('#intro-date').textContent = frame.scramble ? scramble(frame.stamp) : frame.stamp;
+  $('#intro-clock').textContent = frame.scramble ? scramble(frame.clock) : frame.clock;
+  const key = `${frame.subtitle?.text ?? ''}|${frame.prompt ?? ''}`;
+  if (key === lastIntro) return;
+  lastIntro = key;
+  const subtitle = $('#intro-subtitle');
+  subtitle.innerHTML = frame.subtitle ? `<b>${frame.subtitle.speaker}:</b> ${frame.subtitle.text}` : '';
+  subtitle.classList.toggle('visible', !!frame.subtitle);
+  $('#intro-prompt').textContent = frame.prompt ?? '';
+  $('#intro-prompt').classList.toggle('visible', !!frame.prompt);
+}
+
 function notify(text: string, title = 'ЗАПИСЬ 001') {
   clearTimeout(toastTimeout);
   $('#notification-title').textContent = title;
@@ -251,6 +292,7 @@ function showSettings() {
     <div class="settings-row"><div class="setting-label">Качество изображения</div><div class="quality-options" role="group" aria-label="Качество изображения">${[['low', 'НИЗКОЕ'], ['medium', 'СРЕДНЕЕ'], ['high', 'ВЫСОКОЕ']].map(([value, label]) => `<button class="quality-option ${settings.quality === value ? 'active' : ''}" data-quality="${value}" aria-pressed="${settings.quality === value}">${label}</button>`).join('')}</div></div>
     <div class="settings-row toggle-row"><div><span class="toggle-title">Плёночное зерно</span><p>Аналоговый шум в духе хорроров эпохи PS3.</p></div><label class="toggle"><input type="checkbox" id="grain-input" aria-label="Плёночное зерно" ${settings.grain ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
     <div class="settings-row toggle-row"><div><span class="toggle-title">Эффект видеокамеры</span><p>Плёнка VHS, видоискатель, дата записи и дрожание трекинга.</p></div><label class="toggle"><input type="checkbox" id="camcorder-input" aria-label="Эффект видеокамеры" ${settings.camcorder ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
+    <div class="settings-row toggle-row"><div><span class="toggle-title">Вступительная запись</span><p>Кассета со съёмок на улице перед одиночной игрой. Пропуск — пробел.</p></div><label class="toggle"><input type="checkbox" id="intro-input" aria-label="Вступительная запись" ${settings.intro ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
     <div class="settings-row toggle-row"><div><span class="toggle-title">Покачивание камеры</span><p>Плавный шаг, наклон и инерция рук. Отключите при дискомфорте.</p></div><label class="toggle"><input type="checkbox" id="bob-input" aria-label="Покачивание камеры" ${settings.headBob ? 'checked' : ''}/><span class="toggle-track"></span></label></div>
     <div class="dialog-footer"><button class="reset-settings" id="reset-settings">Сбросить настройки</button><button class="primary-button" id="settings-done"><span>ГОТОВО</span>${icon('check')}</button></div>
   `);
@@ -278,6 +320,7 @@ function showSettings() {
   }));
   $('#grain-input').addEventListener('change', event => { settings.grain = (event.target as HTMLInputElement).checked; updateSettings(); });
   $('#bob-input').addEventListener('change', event => { settings.headBob = (event.target as HTMLInputElement).checked; updateSettings(); });
+  $('#intro-input').addEventListener('change', event => { settings.intro = (event.target as HTMLInputElement).checked; updateSettings(); });
   $('#camcorder-input').addEventListener('change', event => { settings.camcorder = (event.target as HTMLInputElement).checked; updateSettings(); });
   $('#settings-done').addEventListener('click', () => { game.audio.click(); closeModal(); });
   $('#reset-settings').addEventListener('click', () => { settings = { ...DEFAULT_SETTINGS }; updateSettings(); showSettings(); });
@@ -370,6 +413,13 @@ function bindTouchControls() {
 }
 
 $('#pause-button').addEventListener('click', () => game.pause());
+$('#intro-skip').addEventListener('click', () => game.skipIntro());
+{
+  const back = $('#intro-back');
+  back.addEventListener('pointerdown', event => { event.preventDefault(); back.setPointerCapture(event.pointerId); game.setIntroBack(true); back.classList.add('active'); });
+  const release = () => { game.setIntroBack(false); back.classList.remove('active'); };
+  back.addEventListener('pointerup', release); back.addEventListener('pointercancel', release);
+}
 window.addEventListener('keydown', event => {
   if (event.code === 'Escape' && game?.state === 'paused' && !dialog.open) {
     // Pointer-lock Escape pauses only; resuming always requires a deliberate click.
@@ -382,7 +432,7 @@ async function initialize() {
 let assetsReady = false;
 try {
   await loadExplorerAssets(); assetsReady = true;
-  game = new BackroomsGame($('#world'), settings, { onState, onUpdate, onMessage: notify });
+  game = new BackroomsGame($('#world'), settings, { onState, onUpdate, onMessage: notify, onIntro });
   coopUI = new CoopUI({ game, screen, icon, openModal, closeModal, notify, refreshEnd: renderState });
   bindTouchControls();
   window.setTimeout(() => {

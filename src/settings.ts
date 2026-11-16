@@ -5,6 +5,8 @@ export type Settings = {
   headBob: boolean;
   /** Analogue camcorder post-processing and viewfinder overlay. */
   camcorder: boolean;
+  /** Found-footage street prologue before a solo run. */
+  intro: boolean;
   quality: 'low' | 'medium' | 'high';
   muted: boolean;
 };
@@ -14,6 +16,7 @@ export const DEFAULT_SETTINGS: Settings = {
   grain: true,
   headBob: true,
   camcorder: true,
+  intro: true,
   quality: 'high',
   muted: false,
 };
@@ -27,6 +30,7 @@ export function loadSettings(): Settings {
       grain: typeof stored.grain === 'boolean' ? stored.grain : DEFAULT_SETTINGS.grain,
       headBob: typeof stored.headBob === 'boolean' ? stored.headBob : DEFAULT_SETTINGS.headBob,
       camcorder: typeof stored.camcorder === 'boolean' ? stored.camcorder : DEFAULT_SETTINGS.camcorder,
+      intro: typeof stored.intro === 'boolean' ? stored.intro : DEFAULT_SETTINGS.intro,
       quality: ['low', 'medium', 'high'].includes(stored.quality) ? stored.quality : DEFAULT_SETTINGS.quality,
       muted: typeof stored.muted === 'boolean' ? stored.muted : DEFAULT_SETTINGS.muted,
     };
