@@ -43,7 +43,7 @@ export const INTRO_TIMING = { card: 4.6, play: 1.4, fall: 2.3, void: 1.7, wake: 
 /** Distance to the kerb behind the operator, metres. */
 export const KERB_DISTANCE = 2.3;
 const CAMERA_START = new THREE.Vector3(.25, 1.53, 1.05);
-const LOOK_TARGET = new THREE.Vector3(-.35, 1.05, -7.2);
+const FRIEND_POS = new THREE.Vector3(.6, .1, -8.2);
 
 const smooth = (a: number, b: number, x: number) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const yawToward = (fromX: number, fromZ: number, toX: number, toZ: number) => Math.atan2(-(toX - fromX), -(toZ - fromZ));
@@ -154,6 +154,16 @@ function paperBag() {
   return tex(element);
 }
 
+/** Small porch flag for the Fourth of July (13 stripes, star field as dots). */
+function porchFlag() {
+  const { element, ctx } = canvas(256, 136);
+  for (let i = 0; i < 13; i++) { ctx.fillStyle = i % 2 ? '#efe9dc' : '#a8262c'; ctx.fillRect(0, i * 136 / 13, 256, 136 / 13 + .5); }
+  ctx.fillStyle = '#2b3466'; ctx.fillRect(0, 0, 104, 73);
+  ctx.fillStyle = '#efe9dc';
+  for (let r = 0; r < 9; r++) for (let c = 0; c < (r % 2 ? 5 : 6); c++) { ctx.beginPath(); ctx.arc(9 + c * 17 + (r % 2) * 8.5, 5 + r * 7.6, 2, 0, 7); ctx.fill(); }
+  const t = tex(element); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t;
+}
+
 function leafNoise() {
   const { element, ctx } = canvas(256), random = seededRandom(912);
   ctx.fillStyle = '#d8d8d8'; ctx.fillRect(0, 0, 256, 256);
@@ -215,7 +225,17 @@ export class FoundFootageIntro {
   private lookPitch = 0;
   private backHeld = false;
   private touch: boolean;
-  private actressPos = new THREE.Vector3(-3.3, 0, -6.5);
+  private actressPos = new THREE.Vector3(-2.1, .1, -6.75);
+  /** 0..1: how far the friend's startled reaction has played (the creature reached him). */
+  private scared = 0;
+  private directorArrived = false;
+  private directorTalk = 0;
+  private aim = new THREE.Vector3();
+  private aimVelocity = new THREE.Vector3();
+  private fov = 40;
+  private jolt = new THREE.Vector3();
+  private joltTimer = 2.5;
+  private random = seededRandom(704);
   private directorPos = new THREE.Vector3(4.8, 0, -1.6);
 
   constructor(renderer: THREE.WebGLRenderer, audio: Soundscape, touch = false, shadowSize = 2048) {
@@ -230,8 +250,9 @@ export class FoundFootageIntro {
     this.buildCar();
     this.bakeStatic();
     this.cast = this.buildCast();
+    this.aim.copy(this.subject());
     this.scene.traverse(o => { if (o instanceof THREE.DirectionalLight) o.shadow.mapSize.set(shadowSize, shadowSize); });
-    this.camera.position.copy(CAMERA_START); this.camera.lookAt(LOOK_TARGET);
+    this.camera.position.copy(CAMERA_START); this.camera.fov = this.fov; this.camera.updateProjectionMatrix(); this.camera.lookAt(this.aim);
   }
 
   // ---- World -----------------------------------------------------------------------------------
@@ -239,17 +260,19 @@ export class FoundFootageIntro {
   private track<T extends { dispose(): void }>(item: T) { this.disposables.push(item); return item; }
 
   private buildSky(renderer: THREE.WebGLRenderer) {
-    const horizon = new THREE.Color(0xe9d7b0), sunDirection = new THREE.Vector3(-.55, .38, .74).normalize();
+    // Golden hour on the Fourth of July: low warm sun behind the operator's left shoulder, long shadows.
+    const horizon = new THREE.Color(0xf2c994), sunDirection = new THREE.Vector3(-.66, .2, .72).normalize();
     const sky = new THREE.Mesh(this.track(new THREE.SphereGeometry(400, 32, 16)), this.track(new THREE.ShaderMaterial({
       side: THREE.BackSide, depthWrite: false, fog: false,
-      uniforms: { sun: { value: sunDirection }, horizon: { value: horizon }, zenith: { value: new THREE.Color(0x3f74c0) } },
+      uniforms: { sun: { value: sunDirection }, horizon: { value: horizon }, zenith: { value: new THREE.Color(0x4a77b8) } },
       vertexShader: 'varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
       fragmentShader: `uniform vec3 sun; uniform vec3 horizon; uniform vec3 zenith; varying vec3 vDir;
         void main() {
           float h = max(vDir.y, 0.0);
           vec3 c = mix(horizon, zenith, pow(h, 0.42));
           float s = max(dot(normalize(vDir), sun), 0.0);
-          c += vec3(1.0, 0.82, 0.55) * (pow(s, 6.0) * 0.35 + pow(s, 300.0) * 2.5);
+          c += vec3(1.0, 0.7, 0.4) * (pow(s, 5.0) * 0.5 + pow(s, 300.0) * 2.5);
+          c = mix(c, vec3(0.98, 0.62, 0.42), smoothstep(0.25, 0.0, h) * 0.35);
           c = mix(c, horizon * 0.85, smoothstep(0.0, -0.2, vDir.y));
           gl_FragColor = vec4(c, 1.0);
         }`,
@@ -262,11 +285,11 @@ export class FoundFootageIntro {
     this.envTarget = pmrem.fromScene(envScene, .02); this.scene.environment = this.envTarget.texture;
     (this.scene as THREE.Scene & { environmentIntensity?: number }).environmentIntensity = .55;
     ground.geometry.dispose(); (ground.material as THREE.Material).dispose(); pmrem.dispose();
-    const hemi = new THREE.HemisphereLight(0xcfe0f2, 0x6a6040, 1.05); this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xffd6a0, 4.3);
+    const hemi = new THREE.HemisphereLight(0xc9d4ea, 0x6d5838, .9); this.scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xffbe7a, 4.9);
     sun.position.copy(sunDirection).multiplyScalar(40).add(new THREE.Vector3(0, 0, -4)); sun.target.position.set(0, 0, -4);
     sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
-    const s = sun.shadow.camera; s.left = s.bottom = -30; s.right = s.top = 30; s.near = 1; s.far = 110;
+    const s = sun.shadow.camera; s.left = s.bottom = -32; s.right = s.top = 32; s.near = 1; s.far = 130;
     sun.shadow.bias = -.0004; sun.shadow.normalBias = .03;
     this.scene.add(sun, sun.target);
   }
@@ -320,6 +343,7 @@ export class FoundFootageIntro {
     const shutterMat = this.track(new THREE.MeshStandardMaterial({ color: 0x324335, roughness: .65 }));
     const garageMat = this.track(new THREE.MeshStandardMaterial({ map: this.track(garageDoor()), roughness: .6 }));
     const brickMat = this.track(new THREE.MeshStandardMaterial({ color: 0x7a4535, roughness: .95 }));
+    const flagMat = this.track(new THREE.MeshStandardMaterial({ map: this.track(porchFlag()), roughness: .85, side: THREE.DoubleSide }));
     const houses: [number, number][] = [[-20, -1], [-4, -1], [12, -1], [28, -1], [-12, 1], [4, 1], [20, 1]];
     houses.forEach(([x, side], index) => {
       const group = new THREE.Group(); group.name = 'House'; group.position.set(x, .1, side * 17); group.rotation.y = side < 0 ? 0 : Math.PI;
@@ -352,6 +376,15 @@ export class FoundFootageIntro {
       group.add(mesh(this.track(box(1.8, .16, 1.0, .55, .08, front + .5)), this.track(new THREE.MeshStandardMaterial({ color: 0x9a978c, roughness: .9 }))));
       group.add(mesh(this.track(box(3.1, 2.3, .1, 2.8, 1.15, front + .02)), trimMat));
       group.add(mesh(this.track(box(2.9, 2.15, .08, 2.8, 1.08, front + .06)), garageMat));
+      if (index % 3 !== 1) {
+        // Bracket-mounted porch flag beside the door, pole angled out over the lawn.
+        const flag = new THREE.Group(); flag.name = 'Flag'; flag.position.set(-.25, 2.05, front + .06); flag.rotation.x = .55;
+        flag.add(mesh(this.track(new THREE.CylinderGeometry(.018, .018, 1.7, 6).translate(0, .85, 0)), trimMat));
+        const cloth = new THREE.PlaneGeometry(.95, .5, 8, 2); const cp = cloth.attributes.position;
+        for (let i = 0; i < cp.count; i++) cp.setZ(i, Math.sin((cp.getX(i) + .5) * 5.5) * .04 * (cp.getX(i) + .48));
+        cloth.computeVertexNormals(); cloth.translate(.5, 1.42, 0); cloth.rotateY(index % 2 ? .4 : -.3);
+        flag.add(mesh(this.track(cloth), flagMat)); group.add(flag);
+      }
       this.scene.add(group);
     });
   }
@@ -470,9 +503,9 @@ export class FoundFootageIntro {
   }
 
   private buildCast() {
-    const director = new CastMember(0x5a7bc4, 'Director');
-    const actress = new CastMember(0x34302c, 'MaskedActress');
-    const friend = new CastMember(0xd8714f, 'Friend');
+    const director = new CastMember('director', 'Director');
+    const actress = new CastMember('actress', 'MaskedActress');
+    const friend = new CastMember('friend', 'Friend');
     const bagTexture = this.track(paperBag());
     const bagGeometry = new THREE.CylinderGeometry(.155, .17, .4, 18, 4, true); const p = bagGeometry.attributes.position;
     for (let i = 0; i < p.count; i++) { const y = p.getY(i); p.setX(i, p.getX(i) * (1 + Math.sin(i * 1.7) * .035)); p.setZ(i, p.getZ(i) * (.92 + Math.cos(i * 2.3) * .03)); if (y > .19) p.setY(i, y + Math.sin(i) * .015); }
@@ -480,13 +513,14 @@ export class FoundFootageIntro {
     const bag = new THREE.Mesh(this.track(bagGeometry), this.track(new THREE.MeshStandardMaterial({ map: bagTexture, roughness: .95, side: THREE.DoubleSide })));
     bag.name = 'PaperBagMask'; bag.castShadow = true;
     const top = new THREE.Mesh(this.track(new THREE.CircleGeometry(.158, 18).rotateX(-Math.PI / 2).translate(0, .19, 0)), bag.material); bag.add(top);
-    actress.wear(bag, 0, 1.69, .01);
+    actress.wear(bag, 0, 1.63, .015);
     director.group.position.copy(this.directorPos); director.group.rotation.y = yawToward(this.directorPos.x, this.directorPos.z, -1, -1.2);
-    actress.group.position.copy(this.actressPos);
-    friend.group.position.set(1.05, .1, -8.1); friend.group.rotation.y = 0.15;
-    actress.group.position.y = .1;
+    actress.group.position.copy(this.actressPos); actress.group.position.y = .1;
+    actress.group.rotation.y = yawToward(this.actressPos.x, this.actressPos.z, FRIEND_POS.x, FRIEND_POS.z);
+    // The "victim" leans on the fence, gazing down the street, oblivious to the creature.
+    friend.group.position.copy(FRIEND_POS); friend.group.rotation.y = yawToward(FRIEND_POS.x, FRIEND_POS.z, 9, -4);
     for (const member of [director, actress, friend]) this.scene.add(member.group);
-    friend.play('idle', 0, .8);
+    actress.play('crouch', 0); friend.play('idle', 0, .8);
     return { director, actress, friend };
   }
 
@@ -501,12 +535,13 @@ export class FoundFootageIntro {
   }
   private enter(phase: IntroPhase) { this.phase = phase; this.t = 0; }
 
-  private readonly script: { gap: number; line?: LineId; action?: () => void }[] = [
+  /** Shot list. A cue waits for its gap and, if given, for `ready` (with a safety timeout). */
+  private readonly script: { gap: number; line?: LineId; ready?: () => boolean; action?: () => void }[] = [
     { gap: .9, line: 'd1', action: () => { this.creeping = true; } },
-    { gap: .5, line: 'd2', action: () => { this.cut = true; this.creeping = false; } },
-    { gap: .3, line: 'a1', action: () => { this.directorWalk = 1; } },
-    { gap: .5, line: 'a2' },
-    { gap: .35, line: 'd3', action: () => { this.cast.director.play('interact', .25); } },
+    { gap: .4, line: 'd2', ready: () => this.scared > .9, action: () => { this.cut = true; this.creeping = false; } },
+    { gap: .25, line: 'a1', action: () => { this.directorWalk = 1; } },
+    { gap: .45, line: 'a2' },
+    { gap: .3, line: 'd3', ready: () => this.directorArrived, action: () => { this.cast.director.play('interact', .25); this.directorTalk = 1.6; } },
     { gap: .5, action: () => { this.enter('backup'); this.promptAt = 0; } },
   ];
 
@@ -532,6 +567,8 @@ export class FoundFootageIntro {
       if (this.t >= INTRO_TIMING.play) { this.enter('take'); this.nextCueAt = this.script[0].gap; }
     } else if (this.phase === 'take') {
       while (this.phase === 'take' && this.cueIndex < this.script.length && this.t >= this.nextCueAt) {
+        const pending = this.script[this.cueIndex];
+        if (pending.ready && !pending.ready() && this.t < this.nextCueAt + 7) break;
         const cue = this.script[this.cueIndex++];
         const duration = cue.line ? this.say(cue.line, cue.line.startsWith('a') ? .95 : 1, cue.line.startsWith('a') ? -.25 : .2) : 0;
         cue.action?.();
@@ -582,60 +619,101 @@ export class FoundFootageIntro {
     };
   }
 
+  private turn(member: CastMember, x: number, z: number, rate: number, dt: number) {
+    const from = member.group.position, face = yawToward(from.x, from.z, x, z), r = member.group.rotation;
+    r.y += Math.atan2(Math.sin(face - r.y), Math.cos(face - r.y)) * Math.min(1, dt * rate);
+  }
+
   private animateCast(dt: number) {
     const { director, actress, friend } = this.cast;
-    // The masked "monster" creeps toward the friend at the fence until the director calls cut.
-    const target = new THREE.Vector3(.35, .1, -7.55);
-    if (this.creeping && this.actressPos.distanceTo(target) > .5) {
+    const cam = this.camera.position;
+    // Take 3: the paper-bag "creature" creeps along the fence on all fours-ish toward the friend.
+    const target = new THREE.Vector3(FRIEND_POS.x - .75, .1, FRIEND_POS.z + .3);
+    if (this.creeping && this.actressPos.distanceTo(target) > .12) {
       const dir = target.clone().sub(this.actressPos).setY(0).normalize();
       this.actressPos.addScaledVector(dir, dt * .42);
       actress.group.rotation.y = yawToward(0, 0, dir.x, dir.z);
-      actress.play('walk', .35, .48);
-      actress.group.position.copy(this.actressPos);
+      actress.play('creep', .4, .62);
+    } else if (this.creeping) {
+      // Reached him: the creature rears up, the victim turns and flinches.
+      actress.play('idle', .35); this.turn(actress, FRIEND_POS.x, FRIEND_POS.z, 4, dt);
+      if (!this.scared) friend.play('startle', .15);
+      this.scared = Math.min(1, this.scared + dt / 1.1);
+      this.turn(friend, this.actressPos.x, this.actressPos.z, 7, dt);
     } else if (this.cut) {
-      actress.play('idle', .5);
-      const face = yawToward(this.actressPos.x, this.actressPos.z, this.camera.position.x, this.camera.position.z);
-      actress.group.rotation.y += Math.atan2(Math.sin(face - actress.group.rotation.y), Math.cos(face - actress.group.rotation.y)) * Math.min(1, dt * 2.2);
-      const turn = yawToward(1.05, -8.1, this.camera.position.x, this.camera.position.z);
-      friend.group.rotation.y += Math.atan2(Math.sin(turn - friend.group.rotation.y), Math.cos(turn - friend.group.rotation.y)) * Math.min(1, dt * 1.4);
-    } else actress.play('idle', .3);
-    // Director walks into frame from the right and stops in front of the lens.
+      actress.play('idle', .5); this.turn(actress, cam.x, cam.z, 2.2, dt);
+      if (friend.current === 'startle' && this.t > 1.2) friend.play('idle', .6, .8);
+      this.turn(friend, this.directorPos.x, this.directorPos.z, 1.4, dt);
+    }
+    actress.group.position.copy(this.actressPos);
+    // The director steps in from behind the camera, walks into frame and stops in front of the lens.
     if (this.directorWalk) {
-      const stop = new THREE.Vector3(.75, 0, -1.15), toStop = stop.clone().sub(this.directorPos).setY(0);
-      if (toStop.length() > .08) {
-        toStop.normalize(); this.directorPos.addScaledVector(toStop, dt * 1.25);
-        director.group.rotation.y = yawToward(0, 0, toStop.x, toStop.z); director.play('walk', .3, 1);
+      const stop = new THREE.Vector3(.7, 0, -1.25 + this.back * .55), toStop = stop.clone().sub(this.directorPos).setY(0);
+      if (toStop.length() > .08 && this.phase !== 'fall') {
+        const pace = this.directorArrived ? .45 : 1.25;
+        toStop.normalize(); this.directorPos.addScaledVector(toStop, dt * pace);
+        if (!this.directorArrived) { director.group.rotation.y = yawToward(0, 0, toStop.x, toStop.z); director.play('walk', .3, 1); }
+        else { this.turn(director, cam.x, cam.z, 3, dt); director.play('walk', .35, .5); }
+      } else if (this.phase === 'fall') {
+        // He sees the operator vanish and lunges toward the kerb.
+        const toward = new THREE.Vector3(cam.x, 0, CAMERA_START.z + KERB_DISTANCE).sub(this.directorPos).setY(0);
+        if (toward.length() > .6) { toward.normalize(); this.directorPos.addScaledVector(toward, dt * 2.6); director.play('jog', .2); this.turn(director, cam.x, CAMERA_START.z + KERB_DISTANCE, 8, dt); }
       } else {
-        const face = yawToward(this.directorPos.x, this.directorPos.z, this.camera.position.x, this.camera.position.z);
-        director.group.rotation.y += Math.atan2(Math.sin(face - director.group.rotation.y), Math.cos(face - director.group.rotation.y)) * Math.min(1, dt * 3);
-        if (this.phase === 'backup' || this.cueIndex < 5) director.play('idle', .45);
+        this.directorArrived = true;
+        this.turn(director, cam.x, cam.z, 3, dt);
+        this.directorTalk -= dt;
+        if (director.current !== 'interact' || this.directorTalk < 0) director.play(this.subtitle?.speaker === DIRECTOR ? 'talk' : 'idle', .45);
       }
-      director.group.position.set(this.directorPos.x, .0, this.directorPos.z);
+      director.group.position.set(this.directorPos.x, 0, this.directorPos.z);
     }
     for (const member of [director, actress, friend]) member.update(dt);
   }
 
+  /** Point the operator would frame right now, before handheld lag. */
+  private subject() {
+    const { director, actress, friend } = this.cast;
+    const head = (member: CastMember, y: number) => new THREE.Vector3(member.group.position.x, y, member.group.position.z);
+    if (this.phase === 'play' || !this.cut) {
+      // Tight on the creature, drifting toward the victim as she closes in.
+      return head(actress, .95).lerp(head(friend, 1.25), .35 + this.scared * .25);
+    }
+    if (!this.directorArrived && this.directorWalk) return head(director, 1.45).lerp(head(actress, 1.2), .45);
+    if (this.phase === 'backup' || this.phase === 'fall') return head(director, 1.35).lerp(head(actress, 1.15), .3 + this.back * .08);
+    return head(director, 1.5).lerp(head(actress, 1.3), .2);
+  }
+
   private animateCamera(dt: number) {
-    const time = this.total;
+    const time = this.total, random = this.random;
     const position = CAMERA_START.clone(); position.z += this.back;
     const moving = this.phase === 'backup' && (this.backHeld || this.promptAt > 6) && this.back < KERB_DISTANCE;
-    const bob = moving ? Math.sin(this.back * 11) * .028 : 0;
-    position.y += bob + Math.sin(time * 1.3) * .006;
-    position.x += Math.sin(time * .7) * .01 + (moving ? Math.sin(this.back * 5.5) * .015 : 0);
-    // Handheld: slow breathing drift plus small high-frequency tremor.
-    let pitch = Math.sin(time * .9) * .008 + Math.sin(time * 5.3) * .0025 + this.lookPitch;
-    let yaw = Math.sin(time * .6) * .012 + Math.sin(time * 4.1) * .002 + this.lookYaw;
-    let roll = Math.sin(time * .8) * .012 + (moving ? Math.sin(this.back * 5.5) * .012 : 0);
+    // Shoulder-held camcorder: breathing, layered tremor, footsteps, and occasional grip corrections.
+    const sway = (f: number, p: number) => Math.sin(time * f + p) * .6 + Math.sin(time * f * 2.13 + p * 1.7) * .3 + Math.sin(time * f * 4.71 + p * .3) * .1;
+    this.joltTimer -= dt;
+    if (this.joltTimer <= 0) { this.joltTimer = 1.4 + random() * 3.2; this.jolt.set((random() - .5) * .05, (random() - .5) * .04, (random() - .5) * .05); }
+    this.jolt.multiplyScalar(Math.exp(-dt * 5));
+    const walk = moving ? 1 : 0, bob = walk * Math.sin(this.back * 11);
+    position.y += bob * .032 + sway(1.1, 0) * .012;
+    position.x += sway(.7, 2) * .02 + walk * Math.sin(this.back * 5.5) * .02;
+    // Operator lag: a damped spring chases the subject, so pans overshoot and settle like a person.
+    const desired = this.subject();
+    const accel = desired.sub(this.aim).multiplyScalar(14).addScaledVector(this.aimVelocity, -6.5);
+    this.aimVelocity.addScaledVector(accel, Math.min(dt, .05)); this.aim.addScaledVector(this.aimVelocity, Math.min(dt, .05));
+    let pitch = sway(1.0, 1) * .016 + this.jolt.x + this.lookPitch + bob * .01;
+    let yaw = sway(.8, 4) * .022 + this.jolt.y + this.lookYaw;
+    let roll = sway(.6, 3) * .02 + this.jolt.z + walk * Math.sin(this.back * 5.5) * .018;
+    // Zoom: punched in on the creature during the take, out to the wide as the director asks for it.
+    const zoom = !this.cut ? 40 : this.phase === 'backup' || this.phase === 'fall' ? 60 : 52;
+    this.fov += (zoom - this.fov) * Math.min(1, dt * (this.cut ? 1.1 : 2));
+    if (Math.abs(this.camera.fov - this.fov) > .01) { this.camera.fov = this.fov; this.camera.updateProjectionMatrix(); }
     if (this.phase === 'fall') {
       const tip = smooth(0, .5, this.t), sink = Math.max(0, this.t - .45);
       position.z += tip * .3; position.y -= tip * .42 + sink * sink * 2.4;
       pitch += tip * 1.15 + Math.sin(this.t * 31) * .03 * tip; roll += tip * .55; yaw += Math.sin(this.t * 17) * .04 * tip;
     }
     this.camera.position.copy(position);
-    this.camera.lookAt(LOOK_TARGET.x, LOOK_TARGET.y + this.back * .02, LOOK_TARGET.z);
+    this.camera.lookAt(this.aim);
     const base = new THREE.Euler().setFromQuaternion(this.camera.quaternion, 'YXZ');
     this.camera.rotation.set(base.x + pitch, base.y + yaw, roll, 'YXZ');
-    void dt;
   }
 
   dispose() {

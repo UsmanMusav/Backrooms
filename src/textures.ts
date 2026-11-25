@@ -56,8 +56,9 @@ function wallpaperBase(ctx: Ctx) {
   for (let i = 0; i < 80; i++) {
     const x = random() * 512;
     const y = random() * 1024;
-    const radius = random() * 110 + 15;
-    blot(ctx, x, y, radius, '67,57,24', random() * 0.1);
+    const radius = random() * 110 + 15, alpha = random() * 0.1;
+    // Drawn three times so blots crossing an edge continue on the neighbouring panel.
+    for (const shift of [-512, 0, 512]) blot(ctx, x + shift, y, radius, '67,57,24', alpha);
   }
   const grime = ctx.createLinearGradient(0, 0, 0, 1024);
   grime.addColorStop(0, 'rgba(32,28,14,.35)');
@@ -72,7 +73,7 @@ function damask(ctx: Ctx, offsetY: number, x0: number, x1: number, line: string,
   ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, x1 - x0, 1024); ctx.clip();
   ctx.lineWidth = 1.15;
   for (let y = -48 + offsetY; y < 1100; y += 48) {
-    for (let x = -24; x < 540; x += 32) {
+    for (let x = -32; x < 548; x += 32) {
       const ox = x + (Math.round((y - offsetY) / 48) % 2) * 16;
       ctx.strokeStyle = line;
       ctx.beginPath();
@@ -90,15 +91,6 @@ function damask(ctx: Ctx, offsetY: number, x0: number, x1: number, line: string,
   }
   ctx.restore();
 }
-function paperSeams(ctx: Ctx, lifted = -1) {
-  for (const x of [0, 256, 511]) {
-    const wide = x === lifted;
-    ctx.fillStyle = `rgba(44,40,18,${wide ? .32 : .16})`;
-    ctx.fillRect(x, 0, wide ? 3 : 1, 1024);
-    ctx.fillStyle = `rgba(235,219,152,${wide ? .2 : .12})`;
-    ctx.fillRect(x + (wide ? 3 : 1), 0, wide ? 2 : 1, 1024);
-  }
-}
 
 /** Number of distinct wallpaper panels. Variant 0 is the clean original. */
 export const WALL_VARIANTS = 6;
@@ -112,7 +104,6 @@ export function wallpaperTexture(variant = 0) {
   const { element, ctx } = canvas(512, 1024);
   wallpaperBase(ctx);
   const random = seededRandom(9100 + variant * 131), sq = 1.9;
-  let lifted = -1;
   if (variant === 1) {
     // Tide-marked leak from the ceiling: brown runs with darker drying edges.
     for (let i = 0; i < 9; i++) {
@@ -177,13 +168,12 @@ export function wallpaperTexture(variant = 0) {
     ctx.strokeStyle = 'rgba(52,44,22,.22)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + 4, y); ctx.lineTo(nx, ny); ctx.lineTo(x + w - 4, y); ctx.stroke();
   } else if (variant === 5) {
     // Replacement strip from a different print run: shifted pattern, slightly greener paper.
-    ctx.fillStyle = 'rgba(176,170,96,.33)'; ctx.fillRect(257, 0, 254, 1024);
-    damask(ctx, 19, 257, 511, 'rgba(78,82,40,.2)', 'rgba(220,214,150,.22)');
-    for (let i = 0; i < 7; i++) blot(ctx, 300 + random() * 170, random() * 1024, 30 + random() * 40, '112,96,48', .11, sq);
-    ctx.fillStyle = 'rgba(244,234,184,.18)'; ctx.fillRect(257, 980, 254, 3);
-    lifted = 256;
+    const strip = ctx.createLinearGradient(128, 0, 384, 0);
+    strip.addColorStop(0, 'rgba(176,170,96,0)'); strip.addColorStop(.12, 'rgba(176,170,96,.3)');
+    strip.addColorStop(.88, 'rgba(176,170,96,.3)'); strip.addColorStop(1, 'rgba(176,170,96,0)');
+    ctx.fillStyle = strip; ctx.fillRect(128, 0, 256, 1024);
+    for (let i = 0; i < 7; i++) blot(ctx, 170 + random() * 170, random() * 1024, 30 + random() * 40, '112,96,48', .11, sq);
   }
-  paperSeams(ctx, lifted);
   return texture(element);
 }
 

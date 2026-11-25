@@ -15,10 +15,28 @@ export function loadExplorerAssets() {
     const [model, albedo, normal, roughness, eyes] = await Promise.all([
       new GLTFLoader().loadAsync('/models/explorer.glb'), loader.loadAsync('/models/explorer-albedo.jpg'),
       loader.loadAsync('/models/explorer-normal.jpg'), loader.loadAsync('/models/explorer-roughness.png'), loader.loadAsync('/models/explorer-eyes.jpg'),
+      loadCastAssets(),
     ]);
     for (const texture of [albedo, normal, roughness, eyes]) { texture.flipY = false; texture.anisotropy = 4; }
     albedo.colorSpace = eyes.colorSpace = THREE.SRGBColorSpace;
     template = model; textures = { albedo, normal, roughness, eyes };
+  })();
+}
+
+type CastKind = 'director' | 'friend' | 'actress' | 'stalker';
+type Wardrobe = Exclude<CastKind, 'stalker'>;
+let cast: { male: GLTF; female: GLTF; skins: Record<Wardrobe, THREE.Texture>; hair: [THREE.Texture, THREE.Texture]; eyes: THREE.Texture } | undefined;
+let castLoading: Promise<void> | undefined;
+/** Civilian prologue cast: two separate skinned bodies (male/female) with baked everyday clothes and real hair meshes. */
+export function loadCastAssets() {
+  return castLoading ??= (async () => {
+    const loader = new THREE.TextureLoader(), gltf = new GLTFLoader();
+    const [male, female, director, friend, actress, hair1, hair2, eyes] = await Promise.all([
+      gltf.loadAsync('/models/cast-male.glb'), gltf.loadAsync('/models/cast-female.glb'),
+      ...['cast-director.jpg', 'cast-friend.jpg', 'cast-lena.jpg', 'cast-hair-1.jpg', 'cast-hair-2.jpg', 'explorer-eyes.jpg'].map(file => loader.loadAsync(`/models/${file}`)),
+    ] as const);
+    for (const texture of [director, friend, actress, hair1, hair2, eyes] as THREE.Texture[]) { texture.flipY = false; texture.anisotropy = 4; texture.colorSpace = THREE.SRGBColorSpace; }
+    cast = { male, female, skins: { director, friend, actress } as Record<Wardrobe, THREE.Texture>, hair: [hair1, hair2] as [THREE.Texture, THREE.Texture], eyes: eyes as THREE.Texture };
   })();
 }
 const SUITS = [0xfff7e4, 0xb6cbcd, 0xdec3a1, 0xc8d2b3];
@@ -165,9 +183,18 @@ export function createViewArm() {
   return { root, mixer, dispose: () => { mixer.stopAllAction(); mixer.uncacheRoot(asset.model); body?.geometry.dispose(); asset.skeletons.forEach(s => s.dispose()); asset.materials.forEach(m => m.dispose()); } };
 }
 
+const CAST_LOOK: Record<CastKind, { body: 'male' | 'female'; hair: string[]; hairColor: number; brows: number }> = {
+  director: { body: 'male', hair: ['Hair_SimpleParted'], hairColor: 0x5b3c22, brows: 0x3a2716 },
+  friend: { body: 'male', hair: ['Hair_Buzzed', 'Hair_Beard'], hairColor: 0x2c211a, brows: 0x241a12 },
+  actress: { body: 'female', hair: ['Hair_Long'], hairColor: 0x6e4527, brows: 0x4a301c },
+  stalker: { body: 'male', hair: [], hairColor: 0, brows: 0 },
+};
+const CAST_CLIPS_ONCE = ['interact', 'startle'];
+
 /**
- * Non-player cast for the found-footage prologue: the same weighted skinned mesh and clip library
- * as the explorers, without expedition gear, torch or name tag, tinted as everyday clothes.
+ * Non-player cast for the found-footage prologue: dedicated civilian skinned characters (CC0
+ * Quaternius base bodies) with painted T-shirts/jeans/hoodie, real hair cards and the same
+ * retargeted animation library as the explorers. Not recoloured expedition suits.
  */
 export class CastMember {
   readonly group = new THREE.Group();
@@ -175,22 +202,45 @@ export class CastMember {
   readonly mixer: THREE.AnimationMixer;
   readonly head?: THREE.Bone;
   private actions = new Map<string, THREE.AnimationAction>();
-  private materials: THREE.MeshStandardMaterial[];
-  private skeletons: Set<THREE.Skeleton>;
+  private materials: THREE.MeshStandardMaterial[] = [];
+  private skeletons = new Set<THREE.Skeleton>();
   private active?: THREE.AnimationAction;
 
-  constructor(tint: number, name: string) {
-    const asset = rig(false); this.model = asset.model; this.materials = asset.materials; this.skeletons = asset.skeletons;
+  constructor(readonly kind: CastKind, name: string) {
+    if (!cast) throw new Error('Cast models must be loaded before the prologue');
+    const look = CAST_LOOK[kind], source = look.body === 'male' ? cast.male : cast.female;
+    this.model = clone(source.scene); this.model.rotation.y = Math.PI;
+    this.model.traverse(object => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const hair = /^Hair_/.test(object.name);
+      if (hair && !look.hair.includes(object.name)) { object.visible = false; return; }
+      const eyes = /Eyes/i.test(object.name), brows = /Eyebrows/i.test(object.name);
+      if (kind === 'stalker') {
+        // A featureless, light-swallowing silhouette: no eyes, no hair, no clothes.
+        if (eyes || brows) { object.visible = false; return; }
+        const material = new THREE.MeshStandardMaterial({ color: 0x050504, roughness: 1, metalness: 0, envMapIntensity: 0 });
+        this.materials.push(material); object.material = material; object.castShadow = true;
+        if (object instanceof THREE.SkinnedMesh) { object.frustumCulled = false; this.skeletons.add(object.skeleton); }
+        return;
+      }
+      const material = new THREE.MeshStandardMaterial({
+        map: hair ? cast!.hair[look.body === 'male' ? 0 : 1] : eyes ? cast!.eyes : brows ? null : cast!.skins[kind as Wardrobe],
+        color: hair ? look.hairColor : brows ? look.brows : 0xffffff,
+        roughness: eyes ? .25 : hair ? .62 : .78, metalness: 0, side: hair ? THREE.DoubleSide : THREE.FrontSide,
+      });
+      this.materials.push(material); object.material = material; object.castShadow = object.receiveShadow = true;
+      if (object instanceof THREE.SkinnedMesh) { object.frustumCulled = false; this.skeletons.add(object.skeleton); }
+    });
     this.group.name = name; this.group.add(this.model); this.mixer = new THREE.AnimationMixer(this.model);
-    for (const material of this.materials) if (material.map === textures.albedo) material.color.setHex(tint);
-    for (const clip of template!.animations) {
+    for (const clip of source.animations) {
       const action = this.mixer.clipAction(clip); this.actions.set(clip.name, action);
-      if (['reveal', 'death', 'attack', 'interact'].includes(clip.name)) { action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true; }
+      if (CAST_CLIPS_ONCE.includes(clip.name)) { action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true; }
     }
     let head: THREE.Bone | undefined;
     this.model.traverse(o => { if (o instanceof THREE.Bone && o.name === 'Head') head = o; });
     this.head = head;
-    this.play('idle', 0);
+    // Desynchronise identical idle loops between cast members.
+    this.play('idle', 0); this.mixer.update(kind.length * .37);
   }
 
   play(name: string, fade = .3, timeScale = 1) {
@@ -202,6 +252,7 @@ export class CastMember {
     if (this.active && fade > 0) next.crossFadeFrom(this.active, fade, false); else this.active?.stop();
     this.active = next;
   }
+  get current() { return this.active?.getClip().name; }
 
   /** Attach a prop to the head bone, positioned in the rig's own (+Z forward) space. */
   wear(prop: THREE.Object3D, x: number, y: number, z: number) {

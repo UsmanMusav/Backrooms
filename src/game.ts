@@ -10,7 +10,10 @@ import type { Cell } from './level';
 import { MimicBrain } from '../shared/mimic';
 import type { Actor, ClientMessage, Pose, RoomView } from '../shared/protocol';
 import { ExplorerAvatar, createViewArm } from './avatar';
-import { createTorch, createFuse, createSwitchboard, createArchive, createOfficeChair, createCardboardBox, createExitDoor, createReturnGrille } from './props';
+import { createTorch, createFuse, createSwitchboard, createArchive, createOfficeChair, createCardboardBox, createExitDoor, createReturnGrille, createAlmondWater } from './props';
+import { buildWallMarkings } from './markings';
+import type { Markings } from './markings';
+import { Stalker } from './stalker';
 import { prismaticLens, paintedSteel } from './materials';
 import { FirstPersonMotion } from './motion';
 import { TensionDirector, FIELD_NOTES } from './tension';
@@ -37,7 +40,11 @@ export type Snapshot = {
   zooming: boolean;
 };
 export const MIN_ZOOM = 1, MAX_ZOOM = 6;
-type Interactable = { type: 'fuse' | 'panel' | 'exit' | 'note'; position: THREE.Vector3; object: THREE.Group; index: number; taken: boolean };
+/** Bottle cells and in-cell offsets (metres). */
+export const ALMOND_WATER: [number, number, number, number][] = [[14, 9, .9, -.8], [21, 6, -.95, .7], [9, 16, .5, 1.05], [17, 22, -1.0, -.6], [22, 13, 1.0, .4]];
+/** Seconds of darkness at the warning wall. */
+export const WARNING_BLACKOUT = 3.6;
+type Interactable = { type: 'fuse' | 'panel' | 'exit' | 'note' | 'water'; position: THREE.Vector3; object: THREE.Group; index: number; taken: boolean };
 type LightFixture = { position: THREE.Vector3; strength: number; flicker: boolean };
 type Callbacks = {
   onState: (state: GameState) => void;
@@ -180,6 +187,13 @@ export class BackroomsGame {
   private panelLamps: THREE.Mesh[] = [];
   private panelLever?: THREE.Group;
   private wetZones: THREE.Vector2[] = [];
+  private markings!: Markings;
+  private stalker!: Stalker;
+  /** Warning-wall blackout: start time (elapsed), whether the player moved in the dark. */
+  private warningAt = -1;
+  private warningMoved = false;
+  private noisyUntil = 0;
+  private boostUntil = 0;
   private danger = 0;
   private flashOn = true;
   private flashlight: THREE.SpotLight;
@@ -256,7 +270,9 @@ export class BackroomsGame {
     this.buildDetails();
     enrichEnvironment(this.scene, this.map);
     this.buildObjectives();
+    this.markings = buildWallMarkings(this.map); this.scene.add(this.markings.group);
     this.buildEntity();
+    this.stalker = new Stalker(this.scene, this.map);
 
     this.flashlight = new THREE.SpotLight(0xfff2d5, 20, 25, 0.40, 0.62, 1.0);
     // Put the emitter just beyond the lens, not behind the view-model: otherwise
@@ -347,14 +363,21 @@ export class BackroomsGame {
         directions.forEach(([dx, dz], face) => {
           if (this.map[z + dz]?.[x + dx] !== false) return;
           const pick = surfaceVariant(x, z, face, WALL_VARIANT_WEIGHTS, 5), angle = Math.atan2(dx, dz);
-          const panel = new THREE.PlaneGeometry(CELL, WALL_HEIGHT); transformUv(panel, 0, pick.mirror);
+          // No mirroring: the wallpaper tiles horizontally, so neighbouring panels join seamlessly.
+          const panel = new THREE.PlaneGeometry(CELL, WALL_HEIGHT);
           panel.rotateY(angle).translate(x * CELL + dx * CELL / 2, WALL_HEIGHT / 2, z * CELL + dz * CELL / 2); wallFaces[pick.variant].push(panel);
           // Inward-facing twin used only by the flashlight shadow map (like the back of a solid block).
           shadowFaces.push(new THREE.PlaneGeometry(CELL + .04, WALL_HEIGHT).rotateY(angle + Math.PI).translate(x * CELL + dx * (CELL / 2 - .02), WALL_HEIGHT / 2, z * CELL + dz * (CELL / 2 - .02)));
-          const tx = x * CELL + dx * (CELL / 2 + 0.016);
-          const tz = z * CELL + dz * (CELL / 2 + 0.016);
-          trims.push(new THREE.BoxGeometry(dx ? 0.035 : CELL, 0.13, dz ? 0.035 : CELL).translate(tx, 0.065, tz));
-          crowns.push(new THREE.BoxGeometry(dx ? 0.035 : CELL, 0.042, dz ? 0.035 : CELL).translate(tx, WALL_HEIGHT - 0.021, tz));
+          // Trim runs wrap convex corners (the next cell along the face is open) instead of stopping
+          // short and leaving a notch; at straight runs and concave corners they simply abut.
+          const T = 0.035, tdx = dz, tdz = dx; // tangent along the face
+          const open = (sx: number, sz: number) => this.map[sz]?.[sx] === false;
+          const extendPlus = open(x + tdx, z + tdz) ? T : 0, extendMinus = open(x - tdx, z - tdz) ? T : 0;
+          const length = CELL + extendPlus + extendMinus, shift = (extendPlus - extendMinus) / 2;
+          const tx = x * CELL + dx * (CELL / 2 + T / 2) + tdx * shift;
+          const tz = z * CELL + dz * (CELL / 2 + T / 2) + tdz * shift;
+          trims.push(new THREE.BoxGeometry(dx ? T : length, 0.13, dz ? T : length).translate(tx, 0.065, tz));
+          crowns.push(new THREE.BoxGeometry(dx ? T : length, 0.042, dz ? T : length).translate(tx, WALL_HEIGHT - 0.021, tz));
         });
       }
     }
@@ -495,6 +518,14 @@ export class BackroomsGame {
       this.addBox(position.x, position.z, .45, .49, .48);
       const group = createArchive(index, note.title, note.text); group.position.copy(position); group.rotation.y = index * .6 + .2; this.scene.add(group);
       this.interactables.push({ type: 'note', position, object: group, index, taken: false });
+    });
+    // Almond water: the Backrooms' one comfort. Restores stamina and slows exhaustion for a while.
+    ALMOND_WATER.forEach(([x, z, ox, oz], index) => {
+      const position = new THREE.Vector3(x * CELL + ox, 0, z * CELL + oz);
+      const bottle = createAlmondWater(index); bottle.position.copy(position); bottle.rotation.y = index * 1.7;
+      if (index % 2) { bottle.rotation.z = Math.PI / 2; bottle.position.y = .034; }
+      this.scene.add(bottle);
+      this.interactables.push({ type: 'water', position: position.clone().setY(.25), object: bottle, index, taken: false });
     });
     const { group: exit, sign } = createExitDoor();
     this.exitSign = sign;
@@ -704,7 +735,8 @@ export class BackroomsGame {
     this.camera.rotation.set(0, this.yaw, 0, 'YXZ');
     this.camera.fov = 72;
     this.camera.updateProjectionMatrix();
-    this.interactables.filter(item => item.type === 'fuse' || item.type === 'note').forEach(item => {
+    this.stalker.reset(1991); this.warningAt = -1; this.warningMoved = false; this.noisyUntil = 0; this.boostUntil = 0;
+    this.interactables.filter(item => item.type === 'fuse' || item.type === 'note' || item.type === 'water').forEach(item => {
       item.taken = false;
       item.object.visible = true;
     });
@@ -732,7 +764,7 @@ export class BackroomsGame {
 
   menu() {
     this.endIntro();
-    this.setState('menu'); this.menuAnimated = true;
+    this.setState('menu'); this.menuAnimated = true; this.stalker.reset(); this.film.uniforms.glitch.value = 0;
     if (document.pointerLockElement) document.exitPointerLock();
     this.audio.setActive(false);
     this.lightLevel = 1; this.motion.reset();
@@ -780,6 +812,12 @@ export class BackroomsGame {
       this.hintUntil = this.elapsed + 20;
       this.callbacks.onMessage(note.text, note.title + ' · ОРИЕНТИР 20 СЕК'); this.target = null;
       return; // Field notes are local discoveries, never spoof network objective actions.
+    }
+    if (item.type === 'water') {
+      item.taken = true; item.object.visible = false; this.target = null; this.pickupDip = 1;
+      this.stamina = 1; this.exhausted = false; this.boostUntil = this.elapsed + 30; this.audio.drink();
+      this.callbacks.onMessage('Сладковатый вкус миндаля. Дыхание выровнялось: 30 секунд бег почти не утомляет.', 'МИНДАЛЬНАЯ ВОДА');
+      return; // Personal supply: stamina is local in co-op too.
     }
     if (this.coop) {
       this.networkSend?.({ t: 'interact', interaction: { kind: item.type, index: item.index } });
@@ -895,7 +933,8 @@ export class BackroomsGame {
     const sprint = moving && !this.exhausted && this.stamina > 0 && (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || this.virtualSprint);
     this.lastMoving = moving;
     this.lastSprint = sprint;
-    this.stamina = THREE.MathUtils.clamp(this.stamina + dt * (sprint ? -0.16 : 0.115), 0, 1);
+    const boosted = this.elapsed < this.boostUntil;
+    this.stamina = THREE.MathUtils.clamp(this.stamina + dt * (sprint ? (boosted ? -0.055 : -0.16) : boosted ? 0.2 : 0.115), 0, 1);
     const speed = sprint ? 4.15 : 2.35;
     const dx = (Math.cos(this.yaw) * input.x - Math.sin(this.yaw) * input.y) * speed * dt;
     const dz = (-Math.sin(this.yaw) * input.x - Math.cos(this.yaw) * input.y) * speed * dt;
@@ -921,6 +960,7 @@ export class BackroomsGame {
       }
     } else this.stepTime = 0.25;
 
+    this.updateWarning(moving);
     if (!this.coop && this.entityActive) this.updateEntity(dt, sprint, moving);
     else if (!this.coop) this.danger = 0;
     this.audio.updateDanger(this.danger);
@@ -937,7 +977,8 @@ export class BackroomsGame {
   private updateEntity(dt: number, sprint: boolean, moving: boolean) {
     const brain = this.mimicBrain;
     if (!brain) return;
-    const player = { ...this.localActor(), sprint, moving };
+    // Moving during the warning-wall blackout is as loud as sprinting.
+    const player = { ...this.localActor(), sprint: sprint || (moving && this.elapsed < this.noisyUntil), moving };
     const event = brain.tick(dt, [player], this.interactables.filter(i => i.type === 'fuse').map(i => i.taken), this.powered);
     this.mimicVisual.update(brain.actor, dt, this.time, true);
     const pos = this.entity.position;
@@ -1054,6 +1095,33 @@ export class BackroomsGame {
     }
   }
 
+  /** "НЕ ДВИГАЙСЯ": the first time someone reaches the warning wall the lights die and something runs past. */
+  private updateWarning(moving: boolean) {
+    const here = this.camera.position, wall = this.markings.warning;
+    if (this.warningAt < 0) {
+      if (Math.hypot(here.x - wall.x, here.z - wall.z) < CELL * .75) {
+        this.warningAt = this.elapsed; this.warningMoved = false;
+        const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+        this.audio.rushPast(Math.sign(right.x * (wall.x - here.x) + right.z * (wall.z - here.z)) || 1);
+      }
+      return;
+    }
+    const t = this.elapsed - this.warningAt;
+    if (t > .5 && t < WARNING_BLACKOUT && moving) { this.warningMoved = true; if (!this.coop) this.noisyUntil = this.elapsed + 2.5; }
+    if (t >= WARNING_BLACKOUT) {
+      this.warningAt = Infinity;
+      this.callbacks.onMessage(this.warningMoved ? 'Вы двигались в темноте. Где-то в лабиринте это услышали.' : 'Вы не шевелились. Шаги пронеслись мимо и стихли.', 'НЕ ДВИГАЙСЯ');
+    }
+  }
+  /** 1 = normal light; dips to darkness during the warning-wall event. */
+  private warningLight() {
+    if (this.warningAt < 0 || this.warningAt === Infinity) return 1;
+    const t = this.elapsed - this.warningAt;
+    if (t < .45) return 1 - t / .45 * .97 + (Math.sin(t * 60) > .3 ? .2 : 0);
+    if (t < WARNING_BLACKOUT - .6) return .03;
+    return Math.min(1, .03 + (t - (WARNING_BLACKOUT - .6)) / .6);
+  }
+
   private findInteraction(): Interactable | null {
     const direction = new THREE.Vector3();
     this.camera.getWorldDirection(direction);
@@ -1124,8 +1192,13 @@ export class BackroomsGame {
     this.updateFlashlight(dt);
     if (this.state === 'playing' || (this.coop && this.state === 'paused')) {
       const tension = this.tension.tick(this.elapsed, this.fuses, this.powered);
-      this.lightLevel = tension.light;
+      const dark = this.warningLight();
+      this.lightLevel = Math.min(tension.light, dark);
       if (tension.event) this.audio.atmosphere(tension.event, tension.pan);
+      const watcher = this.stalker.update(dt, this.elapsed, this.camera, this.flashOn, this.state === 'playing' && !this.coop && dark === 1);
+      if (watcher.seen !== undefined) this.audio.stalkerSeen(watcher.seen);
+      if (watcher.vanished !== undefined) this.audio.stalkerVanish(watcher.vanished);
+      this.film.uniforms.glitch.value = Math.max(this.stalker.glitch, dark < .5 ? .12 : 0);
     }
     const animateMenu = this.state === 'menu' && this.menuAnimated && this.time - this.lastBackgroundRender > 1 / 24;
     // Behind the black title card only one warm-up frame is drawn (it compiles shadow/street programs).
@@ -1154,8 +1227,8 @@ export class BackroomsGame {
         danger: this.danger,
         interaction: this.target ? {
           type: this.target.type,
-          label: this.target.type === 'note' ? 'ПОЛЕВАЯ ЗАПИСЬ ИССЛЕДОВАТЕЛЯ' : this.target.type === 'fuse' ? 'КЕРАМИЧЕСКИЙ ПРЕДОХРАНИТЕЛЬ' : this.target.type === 'panel' ? 'ЭЛЕКТРИЧЕСКИЙ ЩИТОК' : 'АВАРИЙНЫЙ ВЫХОД',
-          action: this.target.type === 'note' ? 'Прочитать и настроить ориентир' : this.target.type === 'fuse' ? 'Забрать' : this.target.type === 'panel' ? this.powered ? 'Проверить' : 'Восстановить питание' : this.powered ? 'Открыть дверь' : 'Проверить дверь',
+          label: this.target.type === 'water' ? 'БУТЫЛКА МИНДАЛЬНОЙ ВОДЫ' : this.target.type === 'note' ? 'ПОЛЕВАЯ ЗАПИСЬ ИССЛЕДОВАТЕЛЯ' : this.target.type === 'fuse' ? 'КЕРАМИЧЕСКИЙ ПРЕДОХРАНИТЕЛЬ' : this.target.type === 'panel' ? 'ЭЛЕКТРИЧЕСКИЙ ЩИТОК' : 'АВАРИЙНЫЙ ВЫХОД',
+          action: this.target.type === 'water' ? 'Выпить' : this.target.type === 'note' ? 'Прочитать и настроить ориентир' : this.target.type === 'fuse' ? 'Забрать' : this.target.type === 'panel' ? this.powered ? 'Проверить' : 'Восстановить питание' : this.powered ? 'Открыть дверь' : 'Проверить дверь',
         } : null,
         hint: this.getHint(),
         zoom: this.zoom,
@@ -1168,7 +1241,7 @@ export class BackroomsGame {
   dispose() {
     cancelAnimationFrame(this.animationId);
     this.resizeObserver.disconnect();
-    this.mimicVisual.dispose();
+    this.mimicVisual.dispose(); this.stalker.dispose(); this.markings.dispose();
     for (const remote of this.remoteVisuals.values()) remote.visual.dispose();
     this.remoteVisuals.clear(); this.viewArm?.dispose(); this.audio.dispose();
     this.composer.dispose(); this.renderer.dispose();

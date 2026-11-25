@@ -369,3 +369,26 @@ export function createExplorerGear() {
   part(rounded(.025, .28, .015, .005), dark, backpack, .10, .005, -.078);
   return { goggles, backpack };
 }
+
+/** Half-litre PET bottle of "almond water": ridged plastic, milky liquid, ribbed cap and wrap label. */
+export function createAlmondWater(seed = 1) {
+  const group = new THREE.Group(); group.name = 'AlmondWater';
+  const profile = [[0, 0], [.03, 0], [.034, .006], [.034, .03], [.031, .036], [.034, .042], [.034, .15], [.03, .17], [.016, .195], [.0125, .2], [.0125, .212]];
+  const plastic = new THREE.MeshPhysicalMaterial({ color: 0xdde8ea, roughness: .12, metalness: 0, transparent: true, opacity: .42, clearcoat: 1, clearcoatRoughness: .08, depthWrite: false });
+  lathe(profile, plastic, group).renderOrder = 3;
+  const fill = .11 + (seed % 3) * .015;
+  const liquid = [[0, .003], [.0315, .003], [.0315, fill], [0, fill]];
+  lathe(liquid, new THREE.MeshPhysicalMaterial({ color: 0xf2ead6, roughness: .2, transparent: true, opacity: .82, sheen: .4 }), group);
+  const cap = part(new THREE.CylinderGeometry(.0145, .0145, .016, 24), new THREE.MeshStandardMaterial({ color: 0xe6ecef, roughness: .45 }), group, 0, .219, 0);
+  for (let k = 0; k < 12; k++) { const rib = part(new THREE.BoxGeometry(.002, .014, .002), cap.material as THREE.Material, group); const a = k / 12 * Math.PI * 2; rib.position.set(Math.cos(a) * .0148, .219, Math.sin(a) * .0148); }
+  part(new THREE.TorusGeometry(.0135, .0016, 6, 24).rotateX(Math.PI / 2), cap.material as THREE.Material, group, 0, .207, 0);
+  const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 128; const c = canvas.getContext('2d')!;
+  const g = c.createLinearGradient(0, 0, 0, 128); g.addColorStop(0, '#f4efe2'); g.addColorStop(1, '#e2d6bb'); c.fillStyle = g; c.fillRect(0, 0, 512, 128);
+  c.fillStyle = '#6b4a2a'; c.fillRect(0, 0, 512, 14); c.fillRect(0, 114, 512, 14);
+  c.fillStyle = '#4b3420'; c.font = '700 34px sans-serif'; c.textAlign = 'center'; c.fillText('МИНДАЛЬНАЯ ВОДА', 256, 60);
+  c.font = '500 20px sans-serif'; c.fillText('ALMOND WATER · 0,5 л · ПИТЬ ОХЛАЖДЁННОЙ', 256, 94);
+  c.fillStyle = '#c9b48a'; c.beginPath(); c.ellipse(60, 64, 22, 34, .4, 0, 7); c.ellipse(452, 64, 22, 34, -.4, 0, 7); c.fill();
+  const map = new THREE.CanvasTexture(canvas); map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = 4;
+  part(new THREE.CylinderGeometry(.0345, .0345, .07, 32, 1, true), new THREE.MeshStandardMaterial({ map, roughness: .55 }), group, 0, .095, 0);
+  return group;
+}

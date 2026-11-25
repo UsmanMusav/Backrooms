@@ -175,6 +175,31 @@ export class Soundscape {
     }
   }
   knock() { this.atmosphere('pipe', Math.random() > .5 ? .7 : -.7); }
+  /** The far figure is noticed: a slow, detuned swell under a thin tape whine. */
+  stalkerSeen(pan: number) {
+    if (!this.active) return;
+    this.tone(49, 2.6, .06, 'sawtooth', 46, 0, pan, true); this.tone(51.5, 2.6, .05, 'sawtooth', 49, 0, pan, true);
+    this.tone(2900, 1.8, .006, 'sine', 3100, .3, pan, true); this.burst(1.2, .03, 300, pan, .5, .2, false, true);
+  }
+  /** It is gone: a hard burst of tape static and something running away behind the walls. */
+  stalkerVanish(pan: number) {
+    if (!this.active) return;
+    this.burst(.42, .17, 3200, 0, 1.3, 0, true, false);
+    for (let i = 0; i < 6; i++) this.burst(.16, .1 - i * .012, 420, pan * (1 - i * .12), .6, .35 + i * .19, false, true);
+  }
+  /** Lights die near the warning wall and something heavy sprints past in the dark. */
+  rushPast(pan: number) {
+    if (!this.active) return;
+    this.tone(36, 3.2, .09, 'sine', 30, 0, 0, true);
+    for (let i = 0; i < 9; i++) { const side = pan * (-1 + i / 4); this.burst(.2, .2 - Math.abs(i - 4) * .03, 380, Math.max(-1, Math.min(1, side)), .55, .6 + i * .17, false, true); }
+    this.burst(1.5, .05, 1800, -pan, .7, 2.1, true, true);
+  }
+  /** Unscrewing a cap and a couple of swallows. */
+  drink() {
+    if (!this.active) return;
+    this.burst(.12, .05, 3400, 0, 1.6, 0, true); this.tone(310, .1, .03, 'sine', 180, .45);
+    for (let i = 0; i < 3; i++) { this.tone(240 - i * 20, .14, .05, 'sine', 120, .75 + i * .38); this.burst(.1, .025, 700, 0, .9, .78 + i * .38); }
+  }
   end(won: boolean) {
     this.setActive(false);
     if (won) this.tone(220, 3, .07, 'sine', 440);
@@ -230,14 +255,32 @@ export class Soundscape {
     const trafficFilter = c.createBiquadFilter(); trafficFilter.type = 'lowpass'; trafficFilter.frequency.value = 160;
     const trafficGain = c.createGain(); trafficGain.gain.value = .05;
     traffic.connect(trafficFilter).connect(trafficGain).connect(this.voice!);
-    for (const source of [wind, gust, traffic]) source.start();
-    this.outdoorSources = [wind, gust, traffic]; this.outdoorNodes = [windFilter, windGain, gustDepth, trafficFilter, trafficGain];
+    // Summer-evening cicadas: narrow high band of noise, pulsed by a fast tremolo and a slow swell.
+    const cicada = c.createBufferSource(); cicada.buffer = this.noise; cicada.loop = true;
+    const cicadaFilter = c.createBiquadFilter(); cicadaFilter.type = 'bandpass'; cicadaFilter.frequency.value = 5200; cicadaFilter.Q.value = 9;
+    const cicadaGain = c.createGain(); cicadaGain.gain.value = .022;
+    const pulse = c.createOscillator(), pulseDepth = c.createGain(); pulse.frequency.value = 31; pulseDepth.gain.value = .016;
+    const swell = c.createOscillator(), swellDepth = c.createGain(); swell.frequency.value = .07; swellDepth.gain.value = .01;
+    pulse.connect(pulseDepth).connect(cicadaGain.gain); swell.connect(swellDepth).connect(cicadaGain.gain);
+    const cicadaPan = c.createStereoPanner(); cicadaPan.pan.value = .35;
+    cicada.connect(cicadaFilter).connect(cicadaGain).connect(cicadaPan).connect(this.voice!);
+    for (const source of [wind, gust, traffic, cicada, pulse, swell]) source.start();
+    this.outdoorSources = [wind, gust, traffic, cicada, pulse, swell];
+    this.outdoorNodes = [windFilter, windGain, gustDepth, trafficFilter, trafficGain, cicadaFilter, cicadaGain, pulseDepth, swellDepth, cicadaPan];
   }
   private birdTime = .4;
   private carTime = 9;
+  private popTime = 3.5;
   outdoorTick(dt: number) {
     if (!this.context || !this.outdoorSources.length) return;
-    this.birdTime -= dt; this.carTime -= dt;
+    this.birdTime -= dt; this.carTime -= dt; this.popTime -= dt;
+    if (this.popTime <= 0) {
+      // Fourth of July: a string of firecrackers a few streets away, dull and slightly echoing.
+      this.popTime = 6 + Math.random() * 9;
+      const pan = Math.random() * 1.4 - .7, count = 3 + Math.floor(Math.random() * 7);
+      let at = 0;
+      for (let i = 0; i < count; i++) { at += .05 + Math.random() * .18; this.burst(.06, .07 + Math.random() * .04, 900 + Math.random() * 900, pan, 1, at, false, false, this.voice); }
+    }
     if (this.birdTime <= 0) {
       this.birdTime = .7 + Math.random() * 2.6;
       const pan = Math.random() * 1.6 - .8, base = 2600 + Math.random() * 1700, chirps = 2 + Math.floor(Math.random() * 4);
